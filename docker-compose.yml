@@ -1,0 +1,154 @@
+# Local stack. Every image is pinned to an exact version and digest, every published port is
+# bound to 127.0.0.1, and no service mounts the Docker socket. tests/compose checks all of this.
+name: jobqueue
+
+x-pg-client-env: &pg-client-env
+  PGHOST: postgres
+  PGPORT: "5432"
+  PGUSER: queue
+  PGPASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env (copy .env.example)}
+  PGDATABASE: queue
+  PGSSLMODE: disable
+
+# One image for every queued role and mockshop, built from ./Dockerfile.
+x-app: &app
+  build:
+    context: .
+    dockerfile: Dockerfile
+  image: jobqueue-app:local
+  environment:
+    <<: *pg-client-env
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+
+x-app-healthcheck: &app-healthcheck
+  test: ["CMD", "/queued", "healthcheck"]
+  interval: 5s
+  timeout: 3s
+  retries: 5
+  start_period: 20s
+  start_interval: 1s
+
+services:
+  postgres:
+    image: postgres:16.15-trixie@sha256:f9a7b9ebf6f56201f949db745e47bc423c0f0f8294bafe991cc10bf74b029657
+    environment:
+      POSTGRES_USER: queue
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env (copy .env.example)}
+      POSTGRES_DB: queue
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      # TCP, not the socket: the image's init-time server listens only on the socket.
+      test: ["CMD", "pg_isready", "-h", "127.0.0.1", "-U", "queue", "-d", "queue"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 30s
+      start_interval: 1s
+
+  toxiproxy:
+    image: ghcr.io/shopify/toxiproxy:2.13.0@sha256:5d3dae09bc185dcc5ff6cf43abf6062a4a720aff0c4306a471e773acdcd107aa
+    healthcheck:
+      test: ["CMD", "/toxiproxy-cli", "list"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+      start_interval: 1s
+
+  prometheus:
+    image: prom/prometheus:v3.15.1-busybox@sha256:fa3302279710be2f21a8301ec17a8b4f2301fd829bd113839b3b6b02b6f191a2
+    volumes:
+      - ./config/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "127.0.0.1:9090:9090"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:9090/-/healthy"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 20s
+      start_interval: 1s
+
+  # One-shot (D-033): applies the migrations, then exits 0. The queued roles start after it.
+  migrate:
+    <<: *app
+    command: ["migrate"]
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  api:
+    <<: *app
+    command: ["api"]
+    ports:
+      - "127.0.0.1:8080:8080"
+    healthcheck: *app-healthcheck
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  dispatcher:
+    <<: *app
+    command: ["dispatcher"]
+    restart: always
+    healthcheck: *app-healthcheck
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  worker-1:
+    <<: *app
+    command: ["worker"]
+    healthcheck: *app-healthcheck
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  worker-2:
+    <<: *app
+    command: ["worker"]
+    healthcheck: *app-healthcheck
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  mockshop:
+    <<: *app
+    entrypoint: ["/mockshop"]
+    # Replaces the Postgres client settings: mockshop never talks to the database.
+    environment:
+      MOCKSHOP_HTTP_ADDR: ":8090"
+    ports:
+      - "127.0.0.1:8090:8090"
+    healthcheck:
+      <<: *app-healthcheck
+      test: ["CMD", "/mockshop", "healthcheck"]
+
+  # Runs go, golangci-lint and govulncheck for make (D-021). It is a command runner, not a
+  # long-running service, so it sits behind its own profile and has no healthcheck (D-033).
+  tools:
+    build:
+      context: tools
+      dockerfile: Dockerfile
+    image: jobqueue-tools:local
+    profiles: [tools]
+    working_dir: /src
+    environment:
+      <<: *pg-client-env
+      GOFLAGS: -buildvcs=false
+      GOLANGCI_LINT_CACHE: /root/.cache/golangci-lint
+    volumes:
+      - .:/src
+      - gomodcache:/go/pkg/mod
+      - gobuildcache:/root/.cache/go-build
+      - golangcilintcache:/root/.cache/golangci-lint
+
+volumes:
+  pgdata:
+  gomodcache:
+  gobuildcache:
+  golangcilintcache:
