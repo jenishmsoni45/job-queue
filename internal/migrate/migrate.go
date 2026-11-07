@@ -161,7 +161,7 @@ func appliedMigrations(ctx context.Context, conn *pgx.Conn) ([]record, error) {
 }
 
 // plan checks the applied records against the files and returns the files still
-// to apply, in version order. all must be sorted by version; so must applied.
+// to apply, in the order of all, which Load sorts by version.
 func plan(all []Migration, applied []record) ([]Migration, error) {
 	byVersion := make(map[int64]Migration, len(all))
 	for _, m := range all {

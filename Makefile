@@ -36,7 +36,7 @@ compose-config: .env
 	$(COMPOSE) $(ALL_PROFILES) config --format json --no-path-resolution > .cache/compose-config.json
 
 test: tools-image compose-config ## Go tests with -race, next to Postgres on the Compose network
-	$(COMPOSE) up --detach --wait postgres
+	$(COMPOSE) up --detach --wait --quiet-pull postgres
 	$(TOOLS) go test -race -count=1 ./...
 
 lint: tools-image $(CONSOLE_DEPS) ## gofmt, golangci-lint, and the console typecheck
