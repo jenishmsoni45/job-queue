@@ -1,0 +1,36 @@
+# CI (D-022): the same make targets as local runs, on GitHub-owned actions pinned by commit SHA.
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ci:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: console/.nvmrc
+
+      # lint, test (-race), audit, the console typecheck and build, and the P1-1 stack check.
+      - run: make ci
+
+      - name: Show the stack on failure
+        if: failure()
+        run: |
+          docker compose --profile tools ps --all || true
+          docker compose --profile tools logs --no-color --tail 100 || true
