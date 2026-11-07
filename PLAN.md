@@ -57,7 +57,7 @@ reaper: expired leases → available · too many attempts → dead-letter
 console (React) ◀── read API: backlog, p99 wait per shop, DLQ retry/discard
 ```
 
-**Fencing rule:** a worker may complete, fail or reschedule a job only if the job is still running with the same attempt number and lease owner. Zero rows updated means the worker lost its lease, and its result is discarded.
+**Fencing rule:** a worker may complete, fail or reschedule a job only if the job is still running with the same `claim_seq` and lease owner, and its lease has not expired by the database clock. Zero rows updated means the worker lost its lease, and its result is discarded. (Phase 0 replaced "attempt number" with `claim_seq`; see `docs/decisions.md` D-004.)
 
 **Black Friday experiment (example settings; Phase 0 fixes them):** 10 shops at 20 jobs/s, a handler doing ~30 ms of work plus one mock API call, and 16 workers. Shop 1 then jumps to 2,000 jobs/s for 5 minutes. Run it once with FIFO and once with deficit round robin, and chart every shop's p99 wait over time.
 
@@ -70,7 +70,7 @@ console (React) ◀── read API: backlog, p99 wait per shop, DLQ retry/discar
 | Q3 | At most one live lease per job. | Property test with many concurrent claimers |
 | Q4 | A webhook delivered k times creates exactly one job. | Concurrent replays of one webhook ID |
 | Q5 | A shop's running jobs never exceed `max_concurrency`. | Sampled under load; property test on the dispatcher |
-| Q6 | Under saturation, each backlogged shop gets at least its weighted share of claims, within tolerance. | Property test on the scheduler |
+| Q6 | Under saturation, each backlogged shop gets at least its weighted share of cost units, within tolerance (D-013, D-026). | Property test on the scheduler |
 | Q7 | A throttle reschedules without using up an attempt. | Integration test with a tiny bucket |
 | Q8 | At the backlog limit, enqueue returns 429 and creates nothing. | Integration test |
 
