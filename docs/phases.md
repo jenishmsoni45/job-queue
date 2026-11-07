@@ -31,7 +31,7 @@ Each phase is one PR, started only when asked ("Start phase N") and run by the w
   - `make audit` runs govulncheck and `npm audit --audit-level=moderate`.
 - **Compose:**
   - `docker-compose.yml` defines `postgres` (official `postgres:16.x`), `toxiproxy` and `prometheus` (each from its project's own registry), plus `migrate`, `api`, `dispatcher`, `worker-1`, `worker-2` and `mockshop`.
-  - Every image is pinned to an exact version and digest. Every service has a healthcheck.
+  - Every image is pinned to an exact version and digest. Every long-running service has a healthcheck; the one-shots `migrate` and `tools` don't need one (D-033).
   - Every published port is bound to `127.0.0.1`.
   - Go services run as static binaries; `queued healthcheck` serves the healthcheck, so no shell is needed in the image.
 - **Stub binaries:** `queued` with its three roles, and `mockshop`. Each serves `/healthz` and nothing else yet.
@@ -42,7 +42,7 @@ Each phase is one PR, started only when asked ("Start phase N") and run by the w
 - **Compose check:** a Go test that reads `docker compose config --format json` (standard-library JSON) and checks the image pins, the port bindings and Docker socket mounts.
 
 **Acceptance criteria**
-- **P1-1** `make up` brings every default-profile service to healthy in `docker compose ps`. `make down` leaves no project container running.
+- **P1-1** `make up` brings every default-profile service to healthy in `docker compose ps`; the one-shot `migrate` instead exits 0 (D-033). `make down` leaves no project container running.
 - **P1-2** `make lint`, `make test` (with `-race`) and `make audit` pass. Every Go step runs inside the tools image, and nothing is installed on the Mac (D-021).
 - **P1-3** CI runs on the PR and is green.
 - **P1-4** Running the migration runner twice leaves the schema unchanged. Two runners started at once apply each migration exactly once.
