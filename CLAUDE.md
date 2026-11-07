@@ -62,6 +62,6 @@ If the design turns out to be wrong or a requirement can't be met, stop. Explain
 3. At most one live lease per job.
 4. A webhook delivered k times creates exactly one job.
 5. A shop's running jobs never exceed its max_concurrency.
-6. Under saturation, each backlogged shop gets at least its weighted share of claims, within tolerance.
+6. Under saturation, each backlogged shop gets at least its weighted share of cost units, within tolerance (`docs/decisions.md` D-013, D-026).
 7. A throttle reschedules without using up an attempt.
 8. At the backlog limit, enqueue returns 429 and creates nothing.
