@@ -1,0 +1,9 @@
+# Only the Go sources go into the app image build.
+.git
+.github
+.cache
+.env
+.local
+bench
+console
+docs
