@@ -38,6 +38,9 @@ Each entry gives the question, the options considered, the decision and its cons
 | D-030 | Batch enqueue for the hot counter row | Found while writing the design | Decided |
 | D-031 | When an expired job runs again | Found while writing the design | Decided |
 | D-032 | DLQ retry and the backlog limit | Found while writing the design | Decided |
+| D-033 | One-shot Compose services and healthchecks | Phase 1: P1-1 vs design §3 | Decided |
+| D-034 | Where the compose check gets its config | Phase 1: no Docker CLI in the tools image | Decided |
+| D-035 | Local Postgres credentials | Phase 1: no secrets in the repo | Decided |
 
 ---
 
@@ -521,3 +524,45 @@ Each entry gives the question, the options considered, the decision and its cons
   - "Retry all for this shop" retries as many jobs as fit, oldest first, and reports how many stayed dead.
   - The backlog limit is never exceeded.
 - **Why not B:** the backlog limit would stop being a hard bound.
+
+## D-033 · One-shot Compose services and healthchecks
+
+- **Date:** 2026-11-07 · **Phase:** 1 · **Source:** Phase 1 asks for a healthcheck on every service and for every default-profile service to end up healthy (P1-1). Design §3 makes `migrate` a one-shot that runs and exits, and the `tools` runner that `make` uses for Go commands is not a long-running service either.
+- **Options:**
+  - A. Exempt the one-shots by name.
+  - B. Keep `migrate` running after it migrates, serving `/healthz`.
+  - C. Give the one-shots healthchecks as well, even though those checks mean nothing.
+- **Decision:** A.
+  - Every long-running service has a healthcheck and must become healthy.
+  - `migrate` must exit 0. It doesn't restart, and the `queued` roles wait for it with `service_completed_successfully`.
+  - `tools` runs only under its own `tools` profile, through `docker compose run`, and has no healthcheck.
+  - The compose check names both one-shots explicitly, so the exemption can't hide a missing healthcheck. P1-1's stack check expects `running healthy` for every other default-profile service and `exited 0` for `migrate`.
+- **Why not B:** it contradicts design §3 and leaves an idle process running.
+- **Why not C:** the checks would meet the wording but prove nothing.
+
+## D-034 · Where the compose check gets its config
+
+- **Date:** 2026-11-07 · **Phase:** 1 · **Source:** The compose check (P1-5) is a Go test that reads `docker compose config --format json`, but Go tests run in the tools container, which has no Docker CLI (D-021).
+- **Options:**
+  - A. `make test` writes the config on the host, and the test reads the file.
+  - B. Add the Docker CLI and the compose plugin to the tools image.
+- **Decision:** A.
+  - `make test` runs `docker compose --profile tools config --format json --no-path-resolution` on the host and writes `.cache/compose-config.json`, which is git-ignored.
+  - The test parses it with `encoding/json`. It fails, rather than skips, if the file is missing.
+  - `--no-path-resolution` keeps build contexts relative, so the test can find each Dockerfile in the repo and check its `FROM` lines.
+- **Why not B:** an extra download outside D-001.
+
+## D-035 · Local Postgres credentials
+
+- **Date:** 2026-11-07 · **Phase:** 1 · **Source:** Postgres needs a password, and the repo may hold no secrets.
+- **Options:**
+  - A. A dummy `POSTGRES_PASSWORD` in `.env.example`, copied to `.env` by `make`.
+  - B. Trust authentication, with no password.
+  - C. A dummy password written straight into `docker-compose.yml`.
+- **Decision:** A.
+  - `.env.example` holds a dummy `POSTGRES_PASSWORD` next to the dummy webhook HMAC secret.
+  - Compose requires the value with `${POSTGRES_PASSWORD:?...}`, so a missing `.env` fails loudly.
+  - `make` copies `.env.example` to `.env` (git-ignored) when `.env` is missing, so `make up` works on a fresh clone and in CI.
+  - Every Go process and test reads its connection settings from the standard libpq variables (`PGHOST`, `PGUSER`, `PGPASSWORD`, ...), which Compose sets.
+- **Why not B:** trust authentication is a habit worth avoiding, even inside the Compose network.
+- **Why not C:** it puts a credential-shaped value in a tracked file and ignores `.env.example`.

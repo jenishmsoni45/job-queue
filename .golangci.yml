@@ -1,0 +1,35 @@
+# golangci-lint v2, run by `make lint` in the tools image. CI fails on any finding.
+version: "2"
+
+run:
+  tests: true
+
+linters:
+  default: standard # errcheck, govet, ineffassign, staticcheck, unused
+  enable:
+    - bodyclose     # HTTP response bodies are closed
+    - errorlint     # errors are compared with errors.Is/As and wrapped with %w
+    - gosec         # security checks
+    - misspell
+    - noctx         # network calls carry a context
+    - nolintlint    # every //nolint names its linter and says why
+    - unconvert
+    - usestdlibvars
+  settings:
+    govet:
+      enable-all: true
+      disable:
+        - fieldalignment # struct layout is chosen for readability
+        - shadow         # `if err := ...; err != nil` shadowing is idiomatic
+    nolintlint:
+      require-explanation: true
+      require-specific: true
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/jenishmsoni45/job-queue
