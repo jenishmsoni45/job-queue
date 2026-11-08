@@ -1,0 +1,17 @@
+{
+  "shops": [
+    {"id": "shop-01.mockshop.test", "weight": 1, "max_concurrency": 4, "rate_per_sec": 50, "rate_burst": 50, "backlog_limit": 10000, "backlog_retry_after_ms": 5000},
+    {"id": "shop-02.mockshop.test", "weight": 1, "max_concurrency": 4, "rate_per_sec": 50, "rate_burst": 50, "backlog_limit": 10000, "backlog_retry_after_ms": 5000},
+    {"id": "shop-03.mockshop.test", "weight": 1, "max_concurrency": 4, "rate_per_sec": 50, "rate_burst": 50, "backlog_limit": 10000, "backlog_retry_after_ms": 5000},
+    {"id": "shop-04.mockshop.test", "weight": 1, "max_concurrency": 4, "rate_per_sec": 50, "rate_burst": 50, "backlog_limit": 10000, "backlog_retry_after_ms": 5000},
+    {"id": "shop-05.mockshop.test", "weight": 1, "max_concurrency": 4, "rate_per_sec": 50, "rate_burst": 50, "backlog_limit": 10000, "backlog_retry_after_ms": 5000},
+    {"id": "shop-06.mockshop.test", "weight": 1, "max_concurrency": 4, "rate_per_sec": 50, "rate_burst": 50, "backlog_limit": 10000, "backlog_retry_after_ms": 5000},
+    {"id": "shop-07.mockshop.test", "weight": 1, "max_concurrency": 4, "rate_per_sec": 50, "rate_burst": 50, "backlog_limit": 10000, "backlog_retry_after_ms": 5000},
+    {"id": "shop-08.mockshop.test", "weight": 1, "max_concurrency": 4, "rate_per_sec": 50, "rate_burst": 50, "backlog_limit": 10000, "backlog_retry_after_ms": 5000},
+    {"id": "shop-09.mockshop.test", "weight": 1, "max_concurrency": 4, "rate_per_sec": 50, "rate_burst": 50, "backlog_limit": 10000, "backlog_retry_after_ms": 5000},
+    {"id": "shop-10.mockshop.test", "weight": 1, "max_concurrency": 4, "rate_per_sec": 50, "rate_burst": 50, "backlog_limit": 10000, "backlog_retry_after_ms": 5000}
+  ],
+  "kinds": [
+    {"kind": "order.tag", "cost": 1, "lease_ms": 30000, "heartbeat_ms": 10000, "timeout_ms": 300000, "max_attempts": 10, "max_throttles": 50, "handler_sleep_ms": 30}
+  ]
+}
