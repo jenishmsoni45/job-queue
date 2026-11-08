@@ -196,7 +196,7 @@ The scheduler keeps the following for each shop, in memory:
 This state is refreshed from Postgres every refresh interval, with one row per shop:
 
 ```sql
-SELECT s.id, st.throttled_until, now() AS db_now,
+SELECT s.id, st.throttled_until, statement_timestamp() AS db_now,
        (SELECT count(*)    FROM jobs WHERE shop_id = s.id AND state = 'running') AS running,
        (SELECT min(run_at) FROM jobs WHERE shop_id = s.id AND state = 'queued')  AS next_run_at
 FROM shops s JOIN shop_state st ON st.shop_id = s.id;

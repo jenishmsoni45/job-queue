@@ -579,7 +579,7 @@ Each entry gives the question, the options considered, the decision and its cons
   - B. `clock_timestamp()` in the fenced write and the heartbeat only, keeping `now()` elsewhere.
 - **Decision:** A.
   - `statement_timestamp()` is the database clock read when each statement starts. It is still the database's clock, so NFR-14 holds, and it is stable within a statement, so the reaper and claim queries can still use their indexes.
-  - Every statement that sets or checks a lease, a fencing predicate, `run_at` for a retry, or a claim time uses it. Design §6.3, §7, §8, §9 and §23 now say so (approved by the user).
+  - Every statement that sets or checks a lease, a fencing predicate, `run_at` for a retry, or a claim time uses it. Design §6.1, §6.3, §7, §8, §9 and §23 now say so (approved by the user).
   - Where `requirements.md`, `architecture.md` and `CLAUDE.md` write `now()`, they mean "the database clock", and are unchanged.
 - **Why not B:** two clocks to reason about, and `clock_timestamp()` is volatile, so it can't drive an index scan.
 - **Consequences:** a test holds `run.Tx()` open past the lease and checks that the completion affects 0 rows (P2-1).
