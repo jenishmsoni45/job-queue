@@ -407,7 +407,8 @@ func (w *Worker) complete(rep *Report, f store.Fence, r *Run) {
 		// Unknown outcome (design §7): only the holder of this claim_seq can
 		// complete at it, so "completed at my claim_seq" means the commit landed.
 		rep.AmbiguousCommit = true
-		rctx, rcancel := context.WithTimeout(context.WithoutCancel(w.hard), resultTimeout)
+		// A fresh deadline: the commit may have used up ctx's. Kill still stops it.
+		rctx, rcancel := context.WithTimeout(w.hard, resultTimeout)
 		defer rcancel()
 		j, rerr := store.GetJob(rctx, w.cfg.DB, f.JobID)
 		if rerr == nil && j.State == store.StateCompleted && j.ClaimSeq == f.ClaimSeq {
