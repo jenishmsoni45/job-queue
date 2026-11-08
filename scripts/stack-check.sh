@@ -47,6 +47,30 @@ for url in http://127.0.0.1:8080/healthz http://127.0.0.1:8090/healthz http://12
   fi
 done
 
+# The queue works through the stack (phase 2): api accepts a job, the dispatcher
+# claims it for a worker, and the worker writes a fenced result. order.tag has no
+# handler until phase 5, so the worker records a temporary failure (D-037).
+body='{"shop": "shop-01.mockshop.test", "kind": "order.tag", "payload": {"order_id": 1}}'
+id=$(curl --silent --fail --max-time 5 --header 'Content-Type: application/json' --data "$body" \
+  http://127.0.0.1:8080/v1/jobs | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p') || true
+if [ -z "$id" ]; then
+  fail "POST /v1/jobs did not return a job id"
+else
+  echo "ok    POST /v1/jobs created job $id"
+  attempts=""
+  for _ in $(seq 1 30); do
+    job=$(curl --silent --fail --max-time 5 "http://127.0.0.1:8080/v1/jobs/$id") || job=""
+    attempts=$(printf '%s' "$job" | sed -n 's/.*"attempts":\([0-9][0-9]*\).*/\1/p')
+    [ -n "$attempts" ] && [ "$attempts" -ge 1 ] && break
+    sleep 0.5
+  done
+  if [ -n "$attempts" ] && [ "$attempts" -ge 1 ]; then
+    echo "ok    job $id was claimed and its result written (attempts $attempts)"
+  else
+    fail "job $id was never claimed and run: $job"
+  fi
+fi
+
 if [ "$failures" -gt 0 ]; then
   docker compose ps --all >&2
   docker compose logs --no-color --tail 50 >&2
