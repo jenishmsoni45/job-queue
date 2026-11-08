@@ -15,6 +15,10 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/jenishmsoni45/job-queue/internal/migrate"
+	"github.com/jenishmsoni45/job-queue/migrations"
 )
 
 const cleanupTimeout = 30 * time.Second
@@ -71,6 +75,48 @@ func (d *DB) Connect(t testing.TB) *pgx.Conn {
 		_ = conn.Close(ctx)
 	})
 	return conn
+}
+
+// NewMigrated creates an empty database, as New does, and applies every
+// migration to it.
+func NewMigrated(t testing.TB) *DB {
+	t.Helper()
+	d := New(t)
+	conn := d.Connect(t)
+	if _, err := migrate.Up(t.Context(), conn, migrations.FS); err != nil {
+		t.Fatalf("pgtest: migrate %s: %v", d.Name, err)
+	}
+	if err := conn.Close(t.Context()); err != nil {
+		t.Fatalf("pgtest: close %s: %v", d.Name, err)
+	}
+	return d
+}
+
+// ConnConfig returns a copy of the database's connection settings.
+func (d *DB) ConnConfig() *pgx.ConnConfig { return d.config.Copy() }
+
+// Pool opens a connection pool to the database, with every connection tagged
+// with the application name, so a test can find and kill them in
+// pg_stat_activity. The pool is closed when the test ends.
+func (d *DB) Pool(t testing.TB, application string, maxConns int32) *pgxpool.Pool {
+	t.Helper()
+	cfg, err := pgxpool.ParseConfig("")
+	if err != nil {
+		t.Fatalf("pgtest: parse pool settings: %v", err)
+	}
+	cfg.ConnConfig = d.config.Copy()
+	if application != "" {
+		cfg.ConnConfig.RuntimeParams["application_name"] = application
+	}
+	if maxConns > 0 {
+		cfg.MaxConns = maxConns
+	}
+	pool, err := pgxpool.NewWithConfig(t.Context(), cfg)
+	if err != nil {
+		t.Fatalf("pgtest: pool for %s: %v", d.Name, err)
+	}
+	t.Cleanup(pool.Close)
+	return pool
 }
 
 // ConnectAdmin opens a connection to the default database from the environment,
