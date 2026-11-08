@@ -14,3 +14,6 @@
 # Console build and dependencies
 console/node_modules/
 console/dist/
+
+# rapid writes failing cases here; they are local repro aids, not fixtures
+**/testdata/rapid/

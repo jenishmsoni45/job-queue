@@ -1,3 +1,4 @@
-// Package adversarial will hold the hostile-input tests: tampered HMACs, replay
-// storms, two dispatchers and skewed worker clocks (design §16). Phase 2 adds the first ones.
+// Package adversarial holds the hostile-condition tests (design §16): skewed
+// worker clocks in phase 2; tampered HMACs, replay storms and two dispatchers
+// in later phases.
 package adversarial
