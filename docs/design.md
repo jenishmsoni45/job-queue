@@ -238,21 +238,21 @@ BEGIN;
 -- 1. Candidates, oldest first, skipping rows other transactions hold.
 --    DRR: WHERE shop_id = $shop.  FIFO: WHERE shop_id = ANY($eligible).
 SELECT id, shop_id, cost FROM jobs
- WHERE state = 'queued' AND run_at <= now() AND <shop filter>
+ WHERE state = 'queued' AND run_at <= statement_timestamp() AND <shop filter>
  ORDER BY run_at, id
  LIMIT $n
  FOR UPDATE SKIP LOCKED;
 -- 2. For each distinct candidate shop, in shop-ID order (so no deadlocks):
 SELECT pg_advisory_xact_lock(hashtextextended('claim:' || $shop, 0));
 SELECT count(*) FROM jobs WHERE shop_id = $shop AND state = 'running';   -- exact room under the cap
-SELECT throttled_until FROM shop_state WHERE shop_id = $shop;            -- skip the shop if > now()
+SELECT throttled_until FROM shop_state WHERE shop_id = $shop;            -- skip the shop if > statement_timestamp()
 -- 3. In Go: drop throttled shops, then keep candidates in order while the shop has room,
 --    and (DRR) while cumulative cost <= allowance.
 -- 4. Claim the kept rows.
 UPDATE jobs j
    SET state = 'running', claim_seq = j.claim_seq + 1, lease_owner = $owner_for_row,
-       lease_expires_at = now() + k.lease_ms * interval '1 millisecond',
-       first_claimed_at = coalesce(j.first_claimed_at, now())
+       lease_expires_at = statement_timestamp() + k.lease_ms * interval '1 millisecond',
+       first_claimed_at = coalesce(j.first_claimed_at, statement_timestamp())
   FROM job_kinds k
  WHERE j.id = ANY($kept) AND k.kind = j.kind
 RETURNING j.*;
@@ -273,17 +273,18 @@ COMMIT;   -- unkept candidates' row locks are released here
 
 ## 7. Leases, heartbeats and fencing
 
-- **Lease:** the claim sets `lease_expires_at = now() + lease`, using the database clock (NFR-14).
+- **Which database clock (D-036):** lease, fencing, claim and reaper SQL reads the database clock with `statement_timestamp()`, never `now()`. In Postgres, `now()` is frozen at the start of the transaction, and the fenced completion runs inside the handler's `run.Tx()` transaction, which can be open for the whole run. A check against `now()` there would compare with the time the handler started, so a lease that expired mid-run would still pass. `statement_timestamp()` is the same database clock, read when each statement starts.
+- **Lease:** the claim sets `lease_expires_at = statement_timestamp() + lease`, using the database clock (NFR-14).
 - **Heartbeat:** each worker process sends one statement every heartbeat interval, covering every job it holds:
 
   ```sql
-  UPDATE jobs j SET lease_expires_at = now() + k.lease_ms * interval '1 millisecond'
+  UPDATE jobs j SET lease_expires_at = statement_timestamp() + k.lease_ms * interval '1 millisecond'
     FROM job_kinds k
    WHERE k.kind = j.kind
      AND (j.id, j.claim_seq, j.lease_owner) IN
          (SELECT * FROM unnest($ids::bigint[], $seqs::int[], $owners::text[]))
      AND j.state = 'running'
-     AND j.lease_expires_at > now()            -- an expired lease cannot be revived (Q2)
+     AND j.lease_expires_at > statement_timestamp()   -- an expired lease cannot be revived (Q2)
   RETURNING j.id;
   ```
 
@@ -292,7 +293,7 @@ COMMIT;   -- unkept candidates' row locks are released here
 
   ```sql
   ... WHERE id = $id AND claim_seq = $seq AND lease_owner = $owner
-        AND state = 'running' AND lease_expires_at > now()
+        AND state = 'running' AND lease_expires_at > statement_timestamp()
   ```
 
   - Zero rows means the lease is lost, so the transaction rolls back and the result is discarded. Effects the handler wrote through `run.Tx()` are rolled back with it.
@@ -306,13 +307,13 @@ COMMIT;   -- unkept candidates' row locks are released here
 
 | Handler result | Transition (fenced, one transaction) |
 |---|---|
-| `nil` | → `completed`, `completed_at = now()`, backlog −1, `run.Tx()` effects commit |
-| `queue.Throttled(d)` | `throttles + 1`. Past the budget → `dead` ("throttle budget exhausted"), backlog −1. Otherwise → `queued` with `run_at = now() + d + jitter`. `shop_state.throttled_until = greatest(coalesce(throttled_until, now()), now() + d)`, plus a notify on `shop_throttled`. `attempts` is unchanged (Q7). |
+| `nil` | → `completed`, `completed_at = statement_timestamp()`, backlog −1, `run.Tx()` effects commit |
+| `queue.Throttled(d)` | `throttles + 1`. Past the budget → `dead` ("throttle budget exhausted"), backlog −1. Otherwise → `queued` with `run_at = statement_timestamp() + d + jitter`. `shop_state.throttled_until = greatest(coalesce(throttled_until, statement_timestamp()), statement_timestamp() + d)`, plus a notify on `shop_throttled`. `attempts` is unchanged (Q7). |
 | `queue.Permanent(err)` | → `dead`, reason "permanent", backlog −1 |
-| any other error, a panic, or the hard timeout | `attempts + 1`. At the max → `dead` ("attempts exhausted"), backlog −1. Otherwise → `queued` with `run_at = now() + backoff` |
+| any other error, a panic, the hard timeout, or no handler registered for the kind (D-037) | `attempts + 1`. At the max → `dead` ("attempts exhausted"), backlog −1. Otherwise → `queued` with `run_at = statement_timestamp() + backoff` |
 
-- **Backoff:** the delay is a uniform random value in [0, min(cap, base × 2^(attempts − 1))). The worker draws it, and the database adds it to `now()`.
-- **Hard timeout:** at the kind's timeout, the handler's context is cancelled. If the handler ignores that and is still running after a short grace period, the worker writes the failure anyway and abandons the goroutine. The abandoned goroutine is counted in a metric. Any side effects it still makes are covered by §10.
+- **Backoff:** the delay is a uniform random value in [0, min(cap, base × 2^(attempts − 1))). The worker draws it, and the database adds it to `statement_timestamp()`.
+- **Hard timeout:** at the kind's timeout, the handler's context is cancelled. If the handler ignores that and is still running after a grace period equal to the kind's heartbeat interval (D-038), the worker writes the failure anyway and abandons the goroutine. Heartbeats continue through the grace period, so the failure write still passes fencing. The abandoned goroutine is counted in a metric. Any side effects it still makes are covered by §10.
 - **Panics:** a panic is recovered and stored in `last_error`, truncated.
 
 ## 9. Reaper, pruner and leader election
@@ -325,12 +326,12 @@ COMMIT;   -- unkept candidates' row locks are released here
 
   ```sql
   WITH expired AS (
-    SELECT id FROM jobs WHERE state = 'running' AND lease_expires_at <= now()
+    SELECT id FROM jobs WHERE state = 'running' AND lease_expires_at <= statement_timestamp()
     ORDER BY lease_expires_at LIMIT 500 FOR UPDATE SKIP LOCKED)
   UPDATE jobs j
      SET attempts = j.attempts + 1, lease_owner = NULL, lease_expires_at = NULL, last_error = 'lease expired',
          state = CASE WHEN j.attempts + 1 >= k.max_attempts THEN 'dead' ELSE 'queued' END,
-         run_at = now()                                   -- runnable at once (D-031)
+         run_at = statement_timestamp()                   -- runnable at once (D-031)
          -- plus dead_at and dead_reason when dead
     FROM expired e, job_kinds k WHERE j.id = e.id AND k.kind = j.kind
   RETURNING j.shop_id, j.state;
@@ -378,6 +379,12 @@ func Key(jobID int64, step string) string // "job-<id>-<step>"
 | `POST /v1/dlq/retry-all?shop=` | retry oldest first while they fit | 200 `{retried, still_dead}` |
 | `GET /healthz`, `GET /metrics`, `GET /` | health, metrics, console files | |
 
+**Enqueue validation (D-039):** a request is checked in full before anything is written, and any failure creates nothing.
+- 413: the body is larger than the max request body.
+- 422: the body is not a single JSON object, it has a field not listed above, `shop` or `kind` is empty, `payload` is missing or not a JSON object, `run_at` is not an RFC 3339 time, or the kind is unknown.
+- 404: the shop is unknown.
+- `dedupe_key` returns 422 until enqueue dedupe exists (phase 3), so a caller never believes a retry was deduplicated when it wasn't.
+
 **Webhook receiver:**
 1. It reads the raw body, up to the max body size.
 2. It computes base64(HMAC-SHA256(secret, raw body)) and compares it with `X-Shopify-Hmac-Sha256` using `hmac.Equal`. It parses the body only after that check passes.
@@ -407,7 +414,7 @@ type Handler func(ctx context.Context, run *queue.Run) error
 // queue.Permanent(err)     go to dead now
 ```
 
-Handlers are registered by kind. Test-only kinds (used by chaos runs and invariant tests) are compiled in but only registered when `QUEUED_TEST_HANDLERS=1`.
+Handlers are registered by kind. Test-only kinds (used by chaos runs and invariant tests) are compiled in but only registered when `QUEUED_TEST_HANDLERS=1`. A claimed job whose kind has no registered handler is a temporary failure (D-037): it uses an attempt and backs off, so a later deploy that registers the handler still runs it.
 
 ### 11.4 Config file (`config/shops.json`, D-019)
 
@@ -447,7 +454,7 @@ Handlers are registered by kind. Test-only kinds (used by chaos runs and invaria
 | # | Invariant | Mechanism | Test |
 |---|---|---|---|
 | Q1 | No accepted job is lost: each ends completed or dead. | The enqueue commits before 201; Postgres keeps its durable defaults (`fsync` and `synchronous_commit` on); leases expire and the reaper requeues; attempts are bounded, so every job ends | `tests/chaos`: 100 seeded runs (§18); basic in-process version in phase 2 |
-| Q2 | A worker whose lease expired cannot complete, fail or reschedule the job. | The fenced predicate checks `claim_seq`, the owner, the state and `lease_expires_at > now()`; heartbeats can't revive an expired lease | `tests/invariants`: hold a handler past its lease, let a second worker claim and complete, release the first; its write affects 0 rows. Also: lease expired but not yet reaped; the write still affects 0 rows |
+| Q2 | A worker whose lease expired cannot complete, fail or reschedule the job. | The fenced predicate checks `claim_seq`, the owner, the state and `lease_expires_at > statement_timestamp()` (D-036); heartbeats can't revive an expired lease | `tests/invariants`: hold a handler past its lease, let a second worker claim and complete, release the first; its write affects 0 rows. Also: lease expired but not yet reaped; the write still affects 0 rows |
 | Q3 | At most one live lease per job. | `FOR UPDATE SKIP LOCKED` plus the state check on claim; `claim_seq` is monotonic | `tests/invariants` (rapid): many concurrent claimers on the real claim SQL, no dispatcher; each (job, `claim_seq`) has one owner, and lease intervals of one job never overlap by the DB clock |
 | Q4 | A webhook delivered k times creates exactly one job. | Dedupe keys in the enqueue transaction, unique on (shop, key), checked before admission | `tests/invariants`: k concurrent and k sequential deliveries of one webhook ID, including across the job's completion |
 | Q5 | A shop's running jobs never exceed `max_concurrency`. | Per-shop advisory lock plus an exact running count inside the claim transaction | dispatcher property test; two dispatchers claiming at once; running counts sampled during chaos and bench runs |
@@ -470,7 +477,7 @@ Handlers are registered by kind. Test-only kinds (used by chaos runs and invaria
 | Admin API throttles | `Throttled` result; the shop pauses until Retry-After | No attempts are used up (Q7); throttle budget bounds the loop |
 | Poison job (always fails, or crashes its worker) | Every failure or expired lease counts an attempt | Dead after max attempts |
 | Handler ignores cancellation | Hard timeout plus grace, then the worker writes the failure and abandons the goroutine | The job retries; stray effects are guarded by §10 |
-| Skewed worker clock | Leases and timestamps come from `now()` | No effect on correctness (NFR-14) |
+| Skewed worker clock | Leases and timestamps come from the database clock (D-036) | No effect on correctness (NFR-14) |
 
 ## 15. Security
 
@@ -623,9 +630,9 @@ ALTER TABLE jobs ADD COLUMN partition_id smallint NOT NULL;  -- set at enqueue: 
 
 - **Node:** a node is one dispatcher plus its workers. Workers long-poll their own node's dispatcher.
 - **Leases:** a node renews its partition leases every rebalance scan.
-  - Taking a free or expired partition sets `owner = me`, `epoch = epoch + 1` and `lease_expires_at = now() + partition lease`, all in one conditional update.
+  - Taking a free or expired partition sets `owner = me`, `epoch = epoch + 1` and `lease_expires_at = statement_timestamp() + partition lease`, all in one conditional update.
   - Releasing a partition clears `owner` and bumps the epoch.
-- **Epoch fencing on claims:** a node's claim transaction adds `AND EXISTS (SELECT 1 FROM partitions p WHERE p.id = jobs.partition_id AND p.owner = $node AND p.epoch = $epoch AND p.lease_expires_at > now())`.
+- **Epoch fencing on claims:** a node's claim transaction adds `AND EXISTS (SELECT 1 FROM partitions p WHERE p.id = jobs.partition_id AND p.owner = $node AND p.epoch = $epoch AND p.lease_expires_at > statement_timestamp())` (D-036).
   - A node that lost a partition (its lease expired, or the partition was taken at a higher epoch) can claim nothing from it.
   - Jobs it had already claimed are still guarded by job leases and fencing (§7).
 - **Rebalancing:** each scan, a node counts live nodes, meaning those whose heartbeat is within one partition lease, and computes `target = ceil(16 / live)`.

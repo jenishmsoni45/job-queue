@@ -41,6 +41,10 @@ Each entry gives the question, the options considered, the decision and its cons
 | D-033 | One-shot Compose services and healthchecks | Phase 1: P1-1 vs design §3 | Decided |
 | D-034 | Where the compose check gets its config | Phase 1: no Docker CLI in the tools image | Decided |
 | D-035 | Local Postgres credentials | Phase 1: no secrets in the repo | Decided |
+| D-036 | Which database clock lease SQL reads | Phase 2: `now()` is frozen per transaction | Decided |
+| D-037 | A claimed job with no registered handler | Phase 2: gap in design §8 | Decided |
+| D-038 | Hard-timeout grace period | Phase 2: setting missing from design §2 | Decided |
+| D-039 | What makes an enqueue request invalid | Phase 2: AC-1.3 "invalid payload" undefined | Decided |
 
 ---
 
@@ -566,3 +570,47 @@ Each entry gives the question, the options considered, the decision and its cons
   - Every Go process and test reads its connection settings from the standard libpq variables (`PGHOST`, `PGUSER`, `PGPASSWORD`, ...), which Compose sets.
 - **Why not B:** trust authentication is a habit worth avoiding, even inside the Compose network.
 - **Why not C:** it puts a credential-shaped value in a tracked file and ignores `.env.example`.
+
+## D-036 · Which database clock lease SQL reads
+
+- **Date:** 2026-11-08 · **Phase:** 2 · **Source:** Found while reading design §7 before coding. In Postgres, `now()` returns the start time of the current transaction. The fenced completion runs inside the handler's `run.Tx()` transaction, which can stay open for the whole handler run. `lease_expires_at > now()` would then compare with the moment the handler started, so a lease that expired mid-run would still pass, and Q2 would break.
+- **Options:**
+  - A. `statement_timestamp()` in every claim, heartbeat, fenced-write and reaper statement.
+  - B. `clock_timestamp()` in the fenced write and the heartbeat only, keeping `now()` elsewhere.
+- **Decision:** A.
+  - `statement_timestamp()` is the database clock read when each statement starts. It is still the database's clock, so NFR-14 holds, and it is stable within a statement, so the reaper and claim queries can still use their indexes.
+  - Every statement that sets or checks a lease, a fencing predicate, `run_at` for a retry, or a claim time uses it. Design §6.3, §7, §8, §9 and §23 now say so (approved by the user).
+  - Where `requirements.md`, `architecture.md` and `CLAUDE.md` write `now()`, they mean "the database clock", and are unchanged.
+- **Why not B:** two clocks to reason about, and `clock_timestamp()` is volatile, so it can't drive an index scan.
+- **Consequences:** a test holds `run.Tx()` open past the lease and checks that the completion affects 0 rows (P2-1).
+
+## D-037 · A claimed job with no registered handler
+
+- **Date:** 2026-11-08 · **Phase:** 2 · **Source:** Gap. Design §8 does not say what a worker does with a job whose kind has no handler, for example `order.tag` before phase 5, or a test kind when `QUEUED_TEST_HANDLERS` is off.
+- **Options:**
+  - A. A temporary failure.
+  - B. A permanent failure.
+- **Decision:** A. The job uses an attempt and backs off, with `last_error` "no handler registered for kind ...". After the kind's max attempts it goes dead with "attempts exhausted".
+- **Why not B:** a job enqueued before the deploy that adds its handler would go dead at once, instead of running once the handler exists.
+
+## D-038 · Hard-timeout grace period
+
+- **Date:** 2026-11-08 · **Phase:** 2 · **Source:** Gap. Design §8 says the worker waits "a short grace period" after a hard timeout before it writes the failure and abandons a handler that ignores cancellation, but no setting names that period.
+- **Options:**
+  - A. The kind's heartbeat interval.
+  - B. A new fixed setting (5 s), configurable through the environment.
+- **Decision:** A. The grace period is the kind's `heartbeat_ms`.
+  - Heartbeats continue during the grace period, so the lease is still live and the failure write passes fencing.
+  - Short-lease test and chaos settings get a short grace period with no extra setting.
+- **Why not B:** one more setting that every short-lease test would have to override.
+
+## D-039 · What makes an enqueue request invalid
+
+- **Date:** 2026-11-08 · **Phase:** 2 · **Source:** Gap. AC-1.3 returns 422 for "an invalid payload" without defining it, and enqueue dedupe arrives only in phase 3.
+- **Options:**
+  - A. Strict: `payload` must be a JSON object; malformed JSON, unknown fields and a bad `run_at` are 422; `dedupe_key` is 422 until phase 3.
+  - B. Lenient: any JSON value as payload; unknown fields and `dedupe_key` ignored until phase 3.
+- **Decision:** A. Design §11.1 lists the rules.
+  - The whole request is validated before anything is written, so every 413, 404 and 422 creates nothing.
+  - Phase 3 replaces the `dedupe_key` rejection with the dedupe path (D-018).
+- **Why not B:** in phase 2, a caller's retry with a `dedupe_key` would silently create a second job.
