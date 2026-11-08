@@ -167,24 +167,31 @@ type DirectClaims struct {
 	Wait time.Duration
 }
 
-// Claim implements queue.ClaimSource.
+// Claim implements queue.ClaimSource. The poll deadline only stops the
+// polling: a claim transaction always runs under the caller's context, because
+// one cut off at its commit could lease a job that no worker knows it holds.
 func (d DirectClaims) Claim(ctx context.Context, owner string) (*store.Claimed, error) {
 	wait := d.Wait
 	if wait == 0 {
 		wait = 100 * time.Millisecond
 	}
-	ctx, cancel := context.WithTimeout(ctx, wait)
-	defer cancel()
+	poll := time.NewTimer(wait)
+	defer poll.Stop()
 	for {
 		jobs, err := store.Claim(ctx, d.DB, []string{owner})
 		if len(jobs) == 1 {
 			return &jobs[0], nil
 		}
-		if err != nil && ctx.Err() == nil {
+		if err != nil {
+			if ctx.Err() != nil {
+				return nil, nil
+			}
 			return nil, err
 		}
 		select {
 		case <-ctx.Done():
+			return nil, nil
+		case <-poll.C:
 			return nil, nil
 		case <-time.After(5 * time.Millisecond):
 		}

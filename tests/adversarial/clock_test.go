@@ -101,7 +101,7 @@ func TestSkewedWorkerClockChangesNoLeaseOutcome(t *testing.T) {
 
 func env(t *testing.T) *queuetest.Env {
 	return queuetest.New(t, queuetest.Config(t, func(c *config.File) {
-		queuetest.SetKind(c, testkinds.Sleep, func(k *config.Kind) { k.LeaseMS, k.HeartbeatMS = 300, 100 })
+		queuetest.SetKind(c, testkinds.Sleep, func(k *config.Kind) { k.LeaseMS, k.HeartbeatMS = 1000, 200 })
 	}))
 }
 
@@ -131,7 +131,7 @@ func longRun(t *testing.T, clk clock.Clock) outcome {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-time.After(900 * time.Millisecond):
+		case <-time.After(3 * time.Second):
 			return nil
 		}
 	})
@@ -164,7 +164,7 @@ func lostLease(t *testing.T, clk clock.Clock) outcome {
 func staleCompletion(t *testing.T, clk clock.Clock) outcome {
 	e := env(t)
 	reports := startWorker(t, e, clk, func(context.Context, *queue.Run) error {
-		time.Sleep(450 * time.Millisecond)
+		time.Sleep(1500 * time.Millisecond) // past the lease
 		return nil
 	}, func(c *queue.Config) {
 		c.Heartbeat = func(_ context.Context, leases []store.Fence) ([]int64, error) {

@@ -275,7 +275,7 @@ func TestFailRetriesThenGoesDead(t *testing.T) {
 
 	c := claimOne(t, env, "w1")
 	before := env.DBNow(t)
-	res, err := store.Fail(t.Context(), env.Pool, c.Fence(), "boom 1", 500*time.Millisecond)
+	res, err := store.Fail(t.Context(), env.Pool, c.Fence(), "boom 1", time.Second)
 	after := env.DBNow(t)
 	if err != nil || !res.Applied || res.State != store.StateQueued {
 		t.Fatalf("first Fail = %+v, %v", res, err)
@@ -284,8 +284,8 @@ func TestFailRetriesThenGoesDead(t *testing.T) {
 	if j.Attempts != 1 || j.State != store.StateQueued || *j.LastError != "boom 1" || j.LeaseOwner != nil {
 		t.Errorf("after one failure: %+v", j)
 	}
-	if lo, hi := before.Add(500*time.Millisecond), after.Add(500*time.Millisecond); j.RunAt.Before(lo) || j.RunAt.After(hi) {
-		t.Errorf("run_at %v, want the write's database time + 500ms, in [%v, %v]", j.RunAt, lo, hi)
+	if lo, hi := before.Add(time.Second), after.Add(time.Second); j.RunAt.Before(lo) || j.RunAt.After(hi) {
+		t.Errorf("run_at %v, want the write's database time + 1s, in [%v, %v]", j.RunAt, lo, hi)
 	}
 	if jobs, err := store.Claim(t.Context(), env.Pool, []string{"w2"}); err != nil || len(jobs) != 0 {
 		t.Errorf("claimed %d jobs during the backoff, want 0 (err %v)", len(jobs), err)
@@ -294,7 +294,7 @@ func TestFailRetriesThenGoesDead(t *testing.T) {
 		t.Errorf("Complete with the failed run's fence = %v, %v; want false", ok, err)
 	}
 
-	time.Sleep(600 * time.Millisecond)
+	time.Sleep(1100 * time.Millisecond)
 	for attempt := int32(2); attempt <= 3; attempt++ {
 		c = claimOne(t, env, "w1")
 		res, err = store.Fail(t.Context(), env.Pool, c.Fence(), fmt.Sprintf("boom %d", attempt), 0)
@@ -340,7 +340,7 @@ func TestPermanentGoesStraightToDead(t *testing.T) {
 // clock and never revives an expired one.
 func TestHeartbeat(t *testing.T) {
 	t.Parallel()
-	env := queuetest.New(t, queuetest.Config(t, withLease(300, 100)))
+	env := queuetest.New(t, queuetest.Config(t, withLease(1000, 200)))
 	a := env.Enqueue(t, shopA, testkinds.Sleep, nil)
 	b := env.Enqueue(t, shopA, testkinds.Sleep, nil)
 	ca, cb := claimOne(t, env, "w1"), claimOne(t, env, "w1")
@@ -357,7 +357,7 @@ func TestHeartbeat(t *testing.T) {
 		t.Errorf("lease_expires_at %v not extended past %v", exp, ca.LeaseExpiresAt)
 	}
 
-	time.Sleep(400 * time.Millisecond) // both leases expire
+	time.Sleep(1100 * time.Millisecond) // both leases expire
 	expired := *env.Job(t, a).LeaseExpiresAt
 	alive, err = store.Heartbeat(t.Context(), env.Pool, []store.Fence{ca.Fence(), cb.Fence()})
 	if err != nil || len(alive) != 0 {
@@ -373,7 +373,7 @@ func TestHeartbeat(t *testing.T) {
 func TestReap(t *testing.T) {
 	t.Parallel()
 	env := queuetest.New(t, queuetest.Config(t, func(c *config.File) {
-		withLease(150, 50)(c)
+		withLease(500, 100)(c)
 		queuetest.SetKind(c, testkinds.Fail, func(k *config.Kind) { k.MaxAttempts = 1 })
 	}))
 	retried := env.Enqueue(t, shopA, testkinds.Sleep, nil)
@@ -384,7 +384,7 @@ func TestReap(t *testing.T) {
 	if r, err := store.Reap(t.Context(), env.Pool, 500); err != nil || r != (store.ReapResult{}) {
 		t.Fatalf("reap of live leases = %+v, %v; want nothing", r, err)
 	}
-	time.Sleep(200 * time.Millisecond)
+	time.Sleep(600 * time.Millisecond)
 	live := env.Enqueue(t, shopB, testkinds.Sleep, nil)
 	claimOne(t, env, "w2")
 

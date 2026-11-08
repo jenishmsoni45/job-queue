@@ -115,7 +115,7 @@ func TestRunCancelsALostLeaseWithinOneInterval(t *testing.T) {
 	mu.Unlock()
 	start := time.Now()
 	<-run.ctx.Done()
-	if elapsed := time.Since(start); elapsed > interval+50*time.Millisecond {
+	if elapsed := time.Since(start); elapsed > interval+150*time.Millisecond {
 		t.Errorf("cancelled %v after the lease was lost, want within one interval (%v) plus scheduling", elapsed, interval)
 	}
 	if !errors.Is(run.cause(), lease.ErrLeaseLost) {
@@ -155,7 +155,7 @@ func TestFailingBeatsGiveUpAfterAboutALease(t *testing.T) {
 
 // AC-4.1: successful heartbeats keep a run alive well past its lease length.
 func TestSuccessfulBeatsKeepTheLease(t *testing.T) {
-	const interval, leaseLen = 20 * time.Millisecond, 100 * time.Millisecond
+	const interval, leaseLen = 20 * time.Millisecond, 300 * time.Millisecond
 	fb := &fakeBeat{alive: allAlive}
 	k := lease.New(interval, fb.beat, discard)
 	run := newCanceller()

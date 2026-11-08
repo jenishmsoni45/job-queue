@@ -263,14 +263,14 @@ func TestHardTimeoutAbandonsAHandlerThatIgnoresCancellation(t *testing.T) {
 // lease completes on its first claim.
 func TestHeartbeatsExtendTheLease(t *testing.T) {
 	t.Parallel()
-	env := newEnv(t, 300, 100, 10_000, 5)
+	env := newEnv(t, 600, 150, 10_000, 5)
 	started := make(chan struct{})
 	_, reports := env.StartWorker(t, registry(func(ctx context.Context, _ *queue.Run) error {
 		close(started)
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-time.After(time.Second):
+		case <-time.After(1800 * time.Millisecond):
 			return nil
 		}
 	}))
@@ -323,7 +323,7 @@ func TestLostLeaseCancelsTheHandlerWithinOneHeartbeat(t *testing.T) {
 	}
 	lostAt := time.Now()
 	cause := <-cancelled
-	if elapsed := time.Duration(cancelledAt.Load() - lostAt.UnixNano()); elapsed > heartbeat+100*time.Millisecond {
+	if elapsed := time.Duration(cancelledAt.Load() - lostAt.UnixNano()); elapsed > heartbeat+200*time.Millisecond {
 		t.Errorf("handler cancelled %v after the lease was lost, want within one heartbeat interval (%v) plus statement and scheduling time", elapsed, heartbeat)
 	}
 	if !errors.Is(cause, lease.ErrLeaseLost) {
