@@ -121,7 +121,7 @@ Each phase is one PR, started only when asked ("Start phase N") and run by the w
   - effects in `run.Tx()` roll back when fencing fails
   - `idem.Key` is stable across runs, tested against an HTTP test server that honours `Idempotency-Key`
 - **P3-6** **NFR-10:** the crash-recovery scenario, using the default lease, measures the time from the kill to the last orphaned job's new claim. It meets the target, and the result is written under `bench/results/chaos/`.
-- **P3-7** The pruner deletes only rows past their retention window. Rows younger than the window, and every job that isn't completed, are untouched.
+- **P3-7** The pruner deletes only rows past their retention window. Rows younger than the window, and every job that is neither completed nor discarded, are untouched (D-041).
 - **P3-8** The compose check passes: only the chaos harness mounts the Docker socket, and only under the `chaos` profile (D-025).
 - **P3-9** CI runs the 3-run chaos smoke step, and it is green.
 

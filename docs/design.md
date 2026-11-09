@@ -382,9 +382,9 @@ func Key(jobID int64, step string) string // "job-<id>-<step>"
 
 **Enqueue validation (D-039):** a request is checked in full before anything is written, and any failure creates nothing.
 - 413: the body is larger than the max request body.
-- 422: the body is not a single JSON object, it has a field not listed above, `shop` or `kind` is empty, `payload` is missing or not a JSON object, `run_at` is not an RFC 3339 time, or the kind is unknown.
+- 422: the body is not a single JSON object, it has a field not listed above, `shop` or `kind` is empty, `payload` is missing or not a JSON object, `run_at` is not an RFC 3339 time, `dedupe_key` is empty, longer than 255 bytes or contains control characters (D-045), or the kind is unknown.
 - 404: the shop is unknown.
-- `dedupe_key` returns 422 until enqueue dedupe exists (phase 3), so a caller never believes a retry was deduplicated when it wasn't.
+- If the shop already has the `dedupe_key`, the enqueue returns 200 `{id, duplicate: true}` with the existing job's ID and creates nothing (§5.1, D-018).
 
 **Webhook receiver:**
 1. It reads the raw body, up to the max body size.
@@ -536,9 +536,9 @@ Handlers are registered by kind. Test-only kinds (used by chaos runs and invaria
 ## 18. Chaos harness (D-023, D-025)
 
 - **One run:**
-  1. Bring up the stack with short leases. In the chaos profile, workers and the dispatcher reach Postgres through Toxiproxy.
+  1. Bring up the stack with short leases. In the chaos profile, workers and the dispatcher reach Postgres through Toxiproxy. The chaos stack is its own Compose project, `jobqueue-chaos`, with its own Postgres volume and no published ports, so it never touches the `make up` stack or its data. `make chaos` removes it, volume included, when it ends (D-042).
   2. Enqueue 2,000 jobs across 5 shops with dedupe keys, so retried enqueues stay safe and every accepted ID is known. The jobs use a test kind that sleeps randomly and writes a `run.Tx()` effect; from phase 5 they also call `mockshop`.
-  3. Run a seeded fault schedule. Each step is one of: kill -9 a worker container (it restarts); pause and unpause a worker past its lease; restart Postgres; or add Toxiproxy latency, timeouts or `reset_peer` on the Postgres links.
+  3. Run a seeded fault schedule. Each step is one of: kill -9 a worker container (it restarts); pause and unpause a worker past its lease; restart Postgres, either cleanly or by SIGKILL and then start, as the seed chooses (D-043); or add Toxiproxy latency, timeouts or `reset_peer` on the Postgres links. Every fault starts and ends within the first 30 s of the run (D-044).
   4. Wait until every accepted job is terminal, or until the run timeout (setting: 120 s), which counts as a failure.
 - **Checks:**
   - Every accepted ID is completed or dead (Q1).
@@ -546,9 +546,9 @@ Handlers are registered by kind. Test-only kinds (used by chaos runs and invaria
   - The backlog counter matches a real count.
   - Each completed job's `run.Tx()` effect was applied once.
   - From phase 5, `mockshop`'s applied mutations equal one per completed job (NFR-11).
-- **Output and replay:** each run writes its seed, fault schedule and check results to `bench/results/chaos/`. `CHAOS_SEED=<n> make chaos-one` replays a single run. Chaos runs use a 2 s lease, and the target is 30 s per run (both settings).
+- **Output and replay:** each run writes its seed, fault schedule, duration and check results to `bench/results/chaos/`. `CHAOS_SEED=<n> make chaos-one` replays a single run. Each `make chaos` starts from a fresh random base seed, which it prints and records, and `CHAOS_BASE_SEED=<n>` repeats a whole batch (D-046). Chaos runs use a 2 s lease and a 30 s fault window, with the workload sized to about that length (both settings). A run fails only at the run timeout (D-044).
 - **Crash-recovery scenario (NFR-10):** this runs with the default 30 s lease and measures the time from the kill to the last orphaned job's new claim.
-- **Docker control:** the harness talks to the Docker Engine API over `/var/run/docker.sock` with `net/http`, and drives Toxiproxy's HTTP API (D-006).
+- **Docker control:** the harness talks to the Docker Engine API over `/var/run/docker.sock` with `net/http`, and drives Toxiproxy's HTTP API (D-006). It acts only on the `worker-1`, `worker-2` and `postgres` containers of the `jobqueue-chaos` project, found by their Compose labels (D-042).
 
 ## 19. Metrics
 
