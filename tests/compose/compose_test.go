@@ -1,10 +1,15 @@
 // Package compose checks the Compose file and the lockfiles against NFR-15 and
-// NFR-16: pinned images, loopback-only ports, no Docker socket, healthchecks and
-// a durable Postgres (P1-5), and only the PLAN stack in go.mod and console/ (P1-6).
+// NFR-16: pinned images, loopback-only ports, healthchecks and a durable
+// Postgres (P1-5), only the chaos harness mounting the Docker socket, and only
+// under the chaos profile (P3-8, D-025), and only the PLAN stack in go.mod and
+// console/ (P1-6).
 //
 // The Go tests run in the tools container, which has no Docker CLI (D-021), so
-// `make test` first writes `docker compose config --format json` on the host to
-// .cache/compose-config.json (D-034). These tests read that file.
+// `make test` first writes `docker compose config --format json` on the host
+// (D-034): .cache/compose-config.json for the normal stack, and
+// .cache/compose-config-chaos.json for the chaos stack, which is the separate
+// jobqueue-chaos project with docker-compose.chaos.yml on top (D-042). These
+// tests read those files.
 package compose
 
 import (
@@ -23,8 +28,12 @@ import (
 )
 
 const (
-	repoRoot   = "../.."
-	configFile = ".cache/compose-config.json"
+	repoRoot        = "../.."
+	configFile      = ".cache/compose-config.json"
+	chaosConfigFile = ".cache/compose-config-chaos.json"
+	chaosService    = "chaos"
+	chaosProfile    = "chaos"
+	chaosProject    = "jobqueue-chaos"
 )
 
 // The default-profile services phase 1 defines.
@@ -34,7 +43,7 @@ var defaultServices = []string{
 }
 
 // oneShots run a command and exit, so they have no healthcheck (D-033).
-var oneShots = map[string]bool{"migrate": true, "tools": true}
+var oneShots = map[string]bool{"migrate": true, "tools": true, chaosService: true}
 
 // queuedRoles must start only after migrate has exited 0 (D-033).
 var queuedRoles = []string{"api", "dispatcher", "worker-1", "worker-2"}
@@ -86,20 +95,29 @@ type dependsOn struct {
 	Condition string `json:"condition"`
 }
 
-func loadConfig(t *testing.T) config {
+func loadConfig(t *testing.T) config { return loadConfigFile(t, configFile) }
+
+func loadConfigFile(t *testing.T, file string) config {
 	t.Helper()
-	data, err := os.ReadFile(filepath.Join(repoRoot, configFile))
+	data, err := os.ReadFile(filepath.Join(repoRoot, file)) //nolint:gosec // one of the two config files this package names
 	if err != nil {
-		t.Fatalf("read %s: %v. Run the tests with `make test`, which writes it with `docker compose config --format json`.", configFile, err)
+		t.Fatalf("read %s: %v. Run the tests with `make test`, which writes it with `docker compose config --format json`.", file, err)
 	}
 	var c config
 	if err := json.Unmarshal(data, &c); err != nil {
-		t.Fatalf("parse %s: %v", configFile, err)
+		t.Fatalf("parse %s: %v", file, err)
 	}
 	if len(c.Services) == 0 {
-		t.Fatalf("%s lists no services", configFile)
+		t.Fatalf("%s lists no services", file)
 	}
 	return c
+}
+
+// bothStacks runs check on the normal stack and on the chaos stack.
+func bothStacks(t *testing.T, check func(t *testing.T, c config)) {
+	for _, file := range []string{configFile, chaosConfigFile} {
+		t.Run(filepath.Base(file), func(t *testing.T) { check(t, loadConfigFile(t, file)) })
+	}
 }
 
 func isDefaultProfile(s service) bool { return len(s.Profiles) == 0 }
@@ -120,6 +138,9 @@ func TestDefaultServices(t *testing.T) {
 	}
 	if tools, ok := c.Services["tools"]; !ok || !slices.Equal(tools.Profiles, []string{"tools"}) {
 		t.Errorf("the tools service must exist under the tools profile only; got %+v", tools.Profiles)
+	}
+	if chaos, ok := c.Services[chaosService]; !ok || !slices.Equal(chaos.Profiles, []string{chaosProfile}) {
+		t.Errorf("the chaos service must exist under the chaos profile only; got %+v", chaos.Profiles)
 	}
 }
 
@@ -172,8 +193,9 @@ func dockerfileBases(path string) ([]string, error) {
 
 // P1-5: every image is pinned to an exact version and digest. A service built
 // here is checked through the FROM lines of its Dockerfile.
-func TestImagesArePinned(t *testing.T) {
-	c := loadConfig(t)
+func TestImagesArePinned(t *testing.T) { bothStacks(t, checkImagesPinned) }
+
+func checkImagesPinned(t *testing.T, c config) {
 	for name, s := range c.Services {
 		if s.Build == nil {
 			if err := checkPinned(s.Image); err != nil {
@@ -267,7 +289,8 @@ func checkPorts(s service) error {
 	return errors.Join(errs...)
 }
 
-// P1-5: every published port is bound to 127.0.0.1 (NFR-16).
+// P1-5: every published port is bound to 127.0.0.1 (NFR-16). The chaos stack
+// publishes none (TestChaosStack).
 func TestPortsBoundToLoopback(t *testing.T) {
 	c := loadConfig(t)
 	published := 0
@@ -299,46 +322,122 @@ func TestPortCheckRejectsExposedPorts(t *testing.T) {
 	}
 }
 
-func checkNoDockerSocket(s service) error {
+func mountsDockerSocket(s service) bool {
 	for _, v := range s.Volumes {
 		if strings.Contains(v.Source, "docker.sock") || strings.Contains(v.Target, "docker.sock") {
-			return fmt.Errorf("mounts the Docker socket (%s -> %s)", v.Source, v.Target)
+			return true
 		}
 	}
-	if s.Privileged {
-		return errors.New("runs privileged")
-	}
-	return nil
+	return false
 }
 
-// P1-5: no service mounts the Docker socket (NFR-16, D-025: only the phase 3
-// chaos harness may, and only under the chaos profile).
-func TestNoDockerSocket(t *testing.T) {
-	c := loadConfig(t)
-	for name, s := range c.Services {
-		if err := checkNoDockerSocket(s); err != nil {
-			t.Errorf("service %s: %v", name, err)
+// checkSocketPolicy enforces D-025: only the chaos service may mount the Docker
+// socket, and only under the chaos profile alone. Nothing runs privileged.
+func checkSocketPolicy(name string, s service) error {
+	var errs []error
+	if s.Privileged {
+		errs = append(errs, errors.New("runs privileged"))
+	}
+	if mountsDockerSocket(s) {
+		switch {
+		case name != chaosService:
+			errs = append(errs, errors.New("mounts the Docker socket, which only the chaos harness may (D-025)"))
+		case !slices.Equal(s.Profiles, []string{chaosProfile}):
+			errs = append(errs, fmt.Errorf("mounts the Docker socket under profiles %v; only the chaos profile may (D-025)", s.Profiles))
 		}
 	}
+	if name == chaosService && len(s.Ports) > 0 {
+		errs = append(errs, errors.New("the chaos harness publishes a port"))
+	}
+	return errors.Join(errs...)
+}
+
+// P1-5 and P3-8: only the chaos harness mounts the Docker socket, and only
+// under the chaos profile, in the normal stack and in the chaos stack (NFR-16,
+// D-025). The harness does mount it, so the check is not vacuous.
+func TestOnlyTheChaosHarnessMountsTheDockerSocket(t *testing.T) {
+	bothStacks(t, func(t *testing.T, c config) {
+		for name, s := range c.Services {
+			if err := checkSocketPolicy(name, s); err != nil {
+				t.Errorf("service %s: %v", name, err)
+			}
+		}
+		if !mountsDockerSocket(c.Services[chaosService]) {
+			t.Error("the chaos harness doesn't mount the Docker socket, so it can't control the containers (D-025)")
+		}
+	})
 }
 
 func TestSocketCheckRejectsMounts(t *testing.T) {
-	bad := []service{
-		{Volumes: []volume{{Type: "bind", Source: "/var/run/docker.sock", Target: "/var/run/docker.sock"}}},
-		{Volumes: []volume{{Type: "bind", Source: "/run/user/501/docker.sock", Target: "/sock"}}},
-		{Privileged: true},
+	sock := []volume{{Type: "bind", Source: "/var/run/docker.sock", Target: "/var/run/docker.sock"}}
+	bad := []struct {
+		name string
+		s    service
+	}{
+		{"api", service{Volumes: sock}},
+		{"worker-1", service{Volumes: []volume{{Type: "bind", Source: "/run/user/501/docker.sock", Target: "/sock"}}}},
+		{"api", service{Privileged: true}},
+		{chaosService, service{Volumes: sock}},                                            // in the default profile
+		{chaosService, service{Volumes: sock, Profiles: []string{chaosProfile, "tools"}}}, // under another profile too
+		{chaosService, service{Volumes: sock, Profiles: []string{chaosProfile}, Privileged: true}},
+		{chaosService, service{Volumes: sock, Profiles: []string{chaosProfile}, Ports: []port{{HostIP: "127.0.0.1", Target: 80}}}},
+		{"chaos-helper", service{Volumes: sock, Profiles: []string{chaosProfile}}},
 	}
-	for i, s := range bad {
-		if checkNoDockerSocket(s) == nil {
-			t.Errorf("case %d: checkNoDockerSocket = nil, want an error", i)
+	for i, tt := range bad {
+		if checkSocketPolicy(tt.name, tt.s) == nil {
+			t.Errorf("case %d (%s): checkSocketPolicy = nil, want an error", i, tt.name)
 		}
 	}
+	if err := checkSocketPolicy(chaosService, service{Volumes: sock, Profiles: []string{chaosProfile}}); err != nil {
+		t.Errorf("the chaos harness under the chaos profile was rejected: %v", err)
+	}
+}
+
+// D-042: the chaos stack is its own project, publishes nothing on the host,
+// routes the workers and the dispatcher to Postgres through their own Toxiproxy
+// links, and keeps Postgres durable.
+func TestChaosStack(t *testing.T) {
+	c := loadConfigFile(t, chaosConfigFile)
+	if c.Name != chaosProject {
+		t.Errorf("chaos project name = %q, want %q", c.Name, chaosProject)
+	}
+	for name, s := range c.Services {
+		if len(s.Ports) > 0 {
+			t.Errorf("service %s publishes %d ports in the chaos stack", name, len(s.Ports))
+		}
+	}
+	ports := map[string]bool{}
+	for _, name := range []string{"dispatcher", "worker-1", "worker-2"} {
+		env := c.Services[name].Environment
+		host, port := env["PGHOST"], env["PGPORT"]
+		if host == nil || *host != "toxiproxy" || port == nil || ports[*port] {
+			t.Errorf("service %s reaches Postgres at %v:%v, want its own toxiproxy link", name, deref(host), deref(port))
+			continue
+		}
+		ports[*port] = true
+	}
+	for _, name := range []string{"api", chaosService} {
+		if host := c.Services[name].Environment["PGHOST"]; host == nil || *host != "postgres" {
+			t.Errorf("service %s reaches Postgres at %v, want it directly", name, deref(host))
+		}
+	}
+	if err := checkDurable(c.Services["postgres"]); err != nil {
+		t.Errorf("postgres: %v", err)
+	}
+}
+
+func deref(s *string) string {
+	if s == nil {
+		return "<unset>"
+	}
+	return *s
 }
 
 // D-033: every long-running service has a healthcheck; the one-shots don't
 // need one, and the queued roles start only after migrate exits 0.
-func TestHealthchecksAndOneShots(t *testing.T) {
-	c := loadConfig(t)
+func TestHealthchecksAndOneShots(t *testing.T) { bothStacks(t, checkHealthchecks) }
+
+func checkHealthchecks(t *testing.T, c config) {
 	for name, s := range c.Services {
 		if oneShots[name] {
 			continue

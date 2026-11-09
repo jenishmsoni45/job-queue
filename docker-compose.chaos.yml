@@ -1,0 +1,72 @@
+# Chaos runs only (design §18, D-023, D-042). scripts/chaos.sh applies this file on top of
+# docker-compose.yml in the separate Compose project jobqueue-chaos, never in the `make up`
+# stack. It changes three things:
+#   - each worker and the dispatcher reach Postgres through its own Toxiproxy link, so faults
+#     can be injected on one process's link; api and the harness still connect directly;
+#   - every queued role reads tests/chaos/shops.json: test.effect has the 2 s chaos lease and
+#     0.5 s heartbeat (D-023), and test.sleep the default 30 s lease for crash recovery
+#     (NFR-10); workers register the test kinds and retry with a short backoff;
+#   - nothing is published on the host, so the chaos stack can run beside `make up`.
+
+x-chaos-config: &chaos-config
+  - ./tests/chaos/shops.json:/etc/queued/shops.json:ro
+
+# The reaper scan the dispatcher uses, and the harness needs for the NFR-10 target. Same value.
+x-reaper-scan: &reaper-scan "5000"
+
+services:
+  toxiproxy:
+    command: ["-host=0.0.0.0", "-config=/etc/toxiproxy/proxies.json"]
+    volumes:
+      - ./tests/chaos/toxiproxy.json:/etc/toxiproxy/proxies.json:ro
+
+  api:
+    ports: !reset []
+    volumes: *chaos-config
+
+  dispatcher:
+    hostname: dispatcher
+    environment:
+      PGHOST: toxiproxy
+      PGPORT: "15433"
+      QUEUED_REAPER_SCAN_MS: *reaper-scan
+    volumes: *chaos-config
+    depends_on:
+      toxiproxy:
+        condition: service_healthy
+
+  worker-1:
+    hostname: worker-1
+    environment:
+      PGHOST: toxiproxy
+      PGPORT: "15431"
+      QUEUED_TEST_HANDLERS: "1"
+      QUEUED_BACKOFF_BASE_MS: "100"
+      QUEUED_BACKOFF_CAP_MS: "2000"
+    volumes: *chaos-config
+    depends_on:
+      toxiproxy:
+        condition: service_healthy
+
+  worker-2:
+    hostname: worker-2
+    environment:
+      PGHOST: toxiproxy
+      PGPORT: "15432"
+      QUEUED_TEST_HANDLERS: "1"
+      QUEUED_BACKOFF_BASE_MS: "100"
+      QUEUED_BACKOFF_CAP_MS: "2000"
+    volumes: *chaos-config
+    depends_on:
+      toxiproxy:
+        condition: service_healthy
+
+  prometheus:
+    ports: !reset []
+
+  mockshop:
+    ports: !reset []
+
+  chaos:
+    environment:
+      CHAOS_REAPER_SCAN_MS: *reaper-scan
