@@ -240,8 +240,30 @@ func TestSettingsDefaults(t *testing.T) {
 	}
 	if s.configPath != "/etc/queued/shops.json" || s.dispatcherURL != "http://dispatcher:8080" || s.slots != 8 ||
 		s.refresh != 250*time.Millisecond || s.longPoll != 25*time.Second || s.reaperScan != 5*time.Second ||
-		s.backoff.Base != 2*time.Second || s.backoff.Cap != 5*time.Minute || s.drain != 8*time.Second || s.testHandlers {
+		s.backoff.Base != 2*time.Second || s.backoff.Cap != 5*time.Minute || s.drain != 8*time.Second || s.testHandlers ||
+		s.pruneInterval != time.Minute || s.retention.Completed != 24*time.Hour || s.retention.Discarded != 24*time.Hour ||
+		s.retention.DedupeKeys != 7*24*time.Hour {
 		t.Errorf("defaults = %+v, want the design §2 settings", s)
+	}
+}
+
+// The pruner's settings come from the environment, and a bad one fails fast.
+func TestPruneSettings(t *testing.T) {
+	s, err := loadSettings(env(map[string]string{
+		"QUEUED_PRUNE_INTERVAL_MS":      "1000",
+		"QUEUED_COMPLETED_RETENTION_MS": "2000",
+		"QUEUED_DISCARDED_RETENTION_MS": "3000",
+		"QUEUED_DEDUPE_WINDOW_MS":       "4000",
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.pruneInterval != time.Second || s.retention.Completed != 2*time.Second ||
+		s.retention.Discarded != 3*time.Second || s.retention.DedupeKeys != 4*time.Second {
+		t.Errorf("settings = %+v", s)
+	}
+	if _, err := loadSettings(env(map[string]string{"QUEUED_DEDUPE_WINDOW_MS": "0"})); err == nil {
+		t.Error("a zero dedupe window was accepted")
 	}
 }
 
