@@ -43,6 +43,7 @@ cleanup # start from a fresh chaos database
 
 # The harness binary is built in the main project's tools container, where the Go caches
 # live (D-021), and run in the chaos container, which has the same image.
+mkdir -p .cache
 docker compose run --rm --no-deps tools go test -c -race -o .cache/chaos.test ./tests/chaos
 
 "${compose[@]}" up --detach --build --wait --quiet-pull "${stack[@]}"

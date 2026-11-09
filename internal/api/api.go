@@ -1,6 +1,6 @@
 // Package api is the api role's job endpoints (design §11.1): enqueue one job,
-// with an optional dedupe key, and read one job. Batch enqueue, webhooks, the read API and the DLQ arrive in
-// later phases.
+// with an optional dedupe key, and read one job. Batch enqueue, webhooks, the
+// read API and the DLQ arrive in later phases.
 package api
 
 import (
