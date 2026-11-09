@@ -139,7 +139,7 @@ func (e *Env) ResetDB(ctx context.Context) error {
 // FaultResult is a fault as it happened.
 type FaultResult struct {
 	Fault
-	AppliedMS  int64  `json:"applied_ms"`  // when it was applied, from the start of the run
+	AppliedMS  int64  `json:"applied_ms"`  // when it was applied, from the start of the run; later than at_ms if the fault before it on the same target overran
 	RevertedMS int64  `json:"reverted_ms"` // when it was undone
 	Error      string `json:"error,omitempty"`
 }
@@ -203,14 +203,10 @@ func (e *Env) Run(ctx context.Context, plan Plan) (RunResult, error) {
 	samplerDone := make(chan Samples, 1)
 	go func() { samplerDone <- e.sample(sampleCtx) }()
 
-	var wg sync.WaitGroup
-	res.Faults = make([]FaultResult, len(plan.Faults))
-	for i, f := range plan.Faults {
-		wg.Go(func() { res.Faults[i] = e.inject(runCtx, start, i, f) })
-	}
+	waitFaults := e.injectAll(runCtx, start, plan.Faults)
 	ids, counts, enqErr := e.enqueueAll(runCtx, plan)
 	res.Jobs.Accepted, res.Jobs.EnqueueRetries, res.Jobs.Duplicates = counts.accepted, counts.retries, counts.duplicates
-	wg.Wait()
+	res.Faults = waitFaults()
 
 	// Every fault has been undone by now; make sure of it before waiting.
 	if err := e.Restore(ctx); err != nil {
@@ -340,15 +336,52 @@ func (e *Env) post(ctx context.Context, body []byte) (int, enqueued, error) {
 	return resp.StatusCode, out, nil
 }
 
-// inject applies one fault at its time and undoes it after its duration.
-// Undoing uses a context of its own, so a fault is always undone.
-func (e *Env) inject(ctx context.Context, start time.Time, index int, f Fault) FaultResult {
+// injectAll starts every fault of a schedule, each in its own goroutine, and
+// returns a function that waits until they have all been undone and returns
+// what happened.
+//
+// A fault also waits until the fault before it on the same target has been
+// undone. The plan keeps such faults apart (Fault.End), but undoing one can take
+// longer than planned: Docker may still be starting a killed worker when the
+// next fault on it is due, and would refuse to kill it again. Waiting delays the
+// next fault by the overrun, which its applied_ms shows, and leaves the plan, and
+// so every seed's replay, unchanged.
+func (e *Env) injectAll(ctx context.Context, start time.Time, faults []Fault) func() []FaultResult {
+	results := make([]FaultResult, len(faults))
+	last := map[string]chan struct{}{} // target → closed once its latest fault is undone
+	var wg sync.WaitGroup
+	for i, f := range faults {
+		after, done := last[f.Target], make(chan struct{})
+		last[f.Target] = done
+		wg.Go(func() {
+			defer close(done)
+			results[i] = e.inject(ctx, start, i, f, after)
+		})
+	}
+	return func() []FaultResult {
+		wg.Wait()
+		return results
+	}
+}
+
+// inject applies one fault at its time, once after is closed (a nil after
+// doesn't wait), and undoes it after its duration. Undoing uses a context of
+// its own, so a fault is always undone.
+func (e *Env) inject(ctx context.Context, start time.Time, index int, f Fault, after <-chan struct{}) FaultResult {
 	r := FaultResult{Fault: f}
 	select {
 	case <-ctx.Done():
 		r.Error = "the run ended before the fault was due"
 		return r
 	case <-time.After(time.Until(start.Add(time.Duration(f.AtMS) * time.Millisecond))):
+	}
+	if after != nil {
+		select {
+		case <-ctx.Done():
+			r.Error = "the run ended while the fault waited for the one before it on " + f.Target
+			return r
+		case <-after:
+		}
 	}
 	since := func() int64 { return time.Since(start).Milliseconds() }
 	undo, cancel := context.WithTimeout(context.WithoutCancel(ctx), 60*time.Second)
