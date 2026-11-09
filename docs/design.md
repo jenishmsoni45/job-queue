@@ -321,6 +321,7 @@ COMMIT;   -- unkept candidates' row locks are released here
 - **Leader:** the dispatcher holds a session advisory lock on a dedicated connection.
   - If it can't get the lock, it stays on standby and retries every second.
   - If that connection drops, it stops claiming at once and cancels in-flight claims.
+  - After it loses the lock, it waits two standby retry intervals before it tries for the lock again, so a waiting standby takes over instead of the old leader winning the lock straight back (D-040).
   - The reaper and the pruner run only on the leader.
 - **Reaper:** runs every reaper scan, repeating while a batch comes back full:
 

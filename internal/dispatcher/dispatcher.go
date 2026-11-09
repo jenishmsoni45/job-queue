@@ -113,9 +113,10 @@ func (d *Dispatcher) Run(ctx context.Context) error {
 		_ = conn.Close(closeCtx) // closing the session releases the lock if held
 		cancel()
 		if led {
-			// A dispatcher that just lost the lock waits longer than a standby's
-			// retry interval before it tries again, so a waiting standby takes
-			// over (P2-8) instead of the old leader winning the lock straight back.
+			// A dispatcher that just lost the lock waits two standby retry
+			// intervals before it tries again, so a waiting standby takes over
+			// (P2-8) instead of the old leader winning the lock straight back
+			// (design §9, D-040).
 			sleep(ctx, 2*d.cfg.StandbyRetry)
 		}
 	}

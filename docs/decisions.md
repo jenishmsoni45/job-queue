@@ -45,6 +45,7 @@ Each entry gives the question, the options considered, the decision and its cons
 | D-037 | A claimed job with no registered handler | Phase 2: gap in design §8 | Decided |
 | D-038 | Hard-timeout grace period | Phase 2: setting missing from design §2 | Decided |
 | D-039 | What makes an enqueue request invalid | Phase 2: AC-1.3 "invalid payload" undefined | Decided |
+| D-040 | When a dispatcher that lost the lock tries again | Phase 2: gap in design §9 | Decided |
 
 ---
 
@@ -614,3 +615,15 @@ Each entry gives the question, the options considered, the decision and its cons
   - The whole request is validated before anything is written, so every 413, 404 and 422 creates nothing.
   - Phase 3 replaces the `dedupe_key` rejection with the dedupe path (D-018).
 - **Why not B:** in phase 2, a caller's retry with a `dedupe_key` would silently create a second job.
+
+## D-040 · When a dispatcher that lost the lock tries again
+
+- **Date:** 2026-11-08 · **Phase:** 2 · **Source:** Found in the phase 2 self-review. Design §9 says a standby retries the leader lock every second, but not when a leader that lost its lock connection tries again. In the P2-8 test the old leader reconnected within milliseconds and won the lock straight back, so the standby never took over.
+- **Options:**
+  - A. After losing the lock, the old leader waits two standby retry intervals before it tries again.
+  - B. No wait: the old leader reconnects at once and races the standby.
+- **Decision:** A. Design §9 now says so (approved by the user).
+  - A waiting standby retries within one interval, so it gets the lock before the old leader comes back.
+  - The wait is a multiple of the standby retry setting, with no setting of its own.
+- **Why not B:** the old leader nearly always wins the race, so a leader whose lock connection keeps dropping keeps the lock, and a healthy standby never takes over (P2-8).
+- **Consequences:** with no standby running, a dispatcher that loses its lock connection leads again only after the wait, so claims pause for that long. Workers waiting on it get 503 and retry, as in any leader change (design §6.4). `TestStandbyTakesOverWhenTheLeaderConnectionCloses` covers the takeover.
