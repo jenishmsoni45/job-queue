@@ -1,0 +1,26 @@
+{
+  "started": "2026-11-09T16:31:35.40886696Z",
+  "finished": "2026-11-09T16:32:03.938651417Z",
+  "settings": {
+    "lease_ms": 2000,
+    "heartbeat_ms": 500,
+    "fault_window_ms": 30000,
+    "run_timeout_ms": 120000,
+    "jobs_per_run": 2000,
+    "shops": 5,
+    "max_job_sleep_ms": 250
+  },
+  "runs": [
+    {
+      "seed": 78833456,
+      "passed": true,
+      "duration_ms": 28355,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 8,
+      "file": "run-001-seed-78833456.json"
+    }
+  ],
+  "passed": 1,
+  "failed": 0
+}
