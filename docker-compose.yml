@@ -22,6 +22,11 @@ x-app: &app
   cap_drop: [ALL]
   security_opt: ["no-new-privileges:true"]
 
+# The shop and job-kind config every queued role validates at startup; api seeds
+# the database from it (design §11.4, D-019).
+x-queued-config: &queued-config
+  - ./config/shops.json:/etc/queued/shops.json:ro
+
 x-app-healthcheck: &app-healthcheck
   test: ["CMD", "/queued", "healthcheck"]
   interval: 5s
@@ -84,6 +89,7 @@ services:
   api:
     <<: *app
     command: ["api"]
+    volumes: *queued-config
     ports:
       - "127.0.0.1:8080:8080"
     healthcheck: *app-healthcheck
@@ -94,6 +100,7 @@ services:
   dispatcher:
     <<: *app
     command: ["dispatcher"]
+    volumes: *queued-config
     restart: always
     healthcheck: *app-healthcheck
     depends_on:
@@ -103,6 +110,7 @@ services:
   worker-1:
     <<: *app
     command: ["worker"]
+    volumes: *queued-config
     healthcheck: *app-healthcheck
     depends_on:
       migrate:
@@ -111,6 +119,7 @@ services:
   worker-2:
     <<: *app
     command: ["worker"]
+    volumes: *queued-config
     healthcheck: *app-healthcheck
     depends_on:
       migrate:

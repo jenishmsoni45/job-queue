@@ -22,6 +22,8 @@ import (
 
 // withRealMigrations returns an FS holding the project's real migrations plus extra
 // test migrations, so the tests exercise the real 0001 that creates schema_migrations.
+// Test migrations use versions from 9001 up, above every real one, so adding a
+// real migration never clashes with them.
 func withRealMigrations(t *testing.T, extra map[string]string) fstest.MapFS {
 	t.Helper()
 	fsys := fstest.MapFS{}
@@ -43,6 +45,16 @@ func withRealMigrations(t *testing.T, extra map[string]string) fstest.MapFS {
 		fsys[name] = &fstest.MapFile{Data: []byte(body)}
 	}
 	return fsys
+}
+
+// realVersions returns the versions of the project's real migrations, in order.
+func realVersions(t *testing.T) []int64 {
+	t.Helper()
+	ms, err := migrate.Load(migrations.FS)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return versions(ms)
 }
 
 func versions(ms []migrate.Migration) []int64 {
@@ -111,17 +123,17 @@ func TestUpAppliesInOrderAndRecordsEach(t *testing.T) {
 	t.Parallel()
 	conn := pgtest.New(t).Connect(t)
 	fsys := withRealMigrations(t, map[string]string{
-		"0002_create_a.sql": "CREATE TABLE a (id int PRIMARY KEY);",
-		// Fails unless 0002 already ran, so it proves the order.
-		"0003_alter_a.sql": "ALTER TABLE a ADD COLUMN note text NOT NULL DEFAULT '';",
+		"9002_create_a.sql": "CREATE TABLE a (id int PRIMARY KEY);",
+		// Fails unless 9002 already ran, so it proves the order.
+		"9003_alter_a.sql": "ALTER TABLE a ADD COLUMN note text NOT NULL DEFAULT '';",
 	})
 
 	applied, err := migrate.Up(t.Context(), conn, fsys)
 	if err != nil {
 		t.Fatalf("Up: %v", err)
 	}
-	if got := fmt.Sprint(versions(applied)); got != "[1 2 3]" {
-		t.Fatalf("applied %s, want [1 2 3]", got)
+	if got, want := fmt.Sprint(versions(applied)), fmt.Sprint(append(realVersions(t), 9002, 9003)); got != want {
+		t.Fatalf("applied %s, want %s", got, want)
 	}
 
 	want, err := migrate.Load(fsys)
@@ -156,12 +168,12 @@ func TestUpTwiceLeavesSchemaUnchanged(t *testing.T) {
 	sets := map[string]fs.FS{
 		"real migrations": migrations.FS,
 		"real plus test migrations": withRealMigrations(t, map[string]string{
-			"0002_objects.sql": `
+			"9002_objects.sql": `
 				CREATE TABLE widgets (id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
 				                      shop text NOT NULL, n int NOT NULL CHECK (n >= 0));
 				CREATE INDEX widgets_shop ON widgets (shop) WHERE n > 0;
 				INSERT INTO widgets (shop, n) VALUES ('a', 1), ('b', 2);`,
-			"0003_more.sql": "ALTER TABLE widgets ADD COLUMN created_at timestamptz NOT NULL DEFAULT now();",
+			"9003_more.sql": "ALTER TABLE widgets ADD COLUMN created_at timestamptz NOT NULL DEFAULT now();",
 		}),
 	}
 	for name, fsys := range sets {
@@ -203,8 +215,8 @@ func TestConcurrentRunnersApplyEachMigrationOnce(t *testing.T) {
 	fsys := withRealMigrations(t, map[string]string{
 		// Not idempotent: a second application fails on CREATE TABLE or adds a second row.
 		// The sleep keeps the first runner inside the migration while the others arrive.
-		"0002_log.sql":  "CREATE TABLE apply_log (version int NOT NULL); INSERT INTO apply_log VALUES (2); SELECT pg_sleep(0.2);",
-		"0003_more.sql": "INSERT INTO apply_log VALUES (3);",
+		"9002_log.sql":  "CREATE TABLE apply_log (version int NOT NULL); INSERT INTO apply_log VALUES (9002); SELECT pg_sleep(0.2);",
+		"9003_more.sql": "INSERT INTO apply_log VALUES (9003);",
 	})
 	all, err := migrate.Load(fsys)
 	if err != nil {
@@ -254,8 +266,8 @@ func TestConcurrentRunnersApplyEachMigrationOnce(t *testing.T) {
 				"SELECT string_agg(version::text, ',' ORDER BY version) FROM apply_log").Scan(&logged); err != nil {
 				t.Fatal(err)
 			}
-			if logged != "2,3" {
-				t.Errorf("apply_log = %q, want \"2,3\" (each migration's effect exactly once)", logged)
+			if logged != "9002,9003" {
+				t.Errorf("apply_log = %q, want \"9002,9003\" (each migration's effect exactly once)", logged)
 			}
 			var recorded int
 			if err := check.QueryRow(t.Context(), "SELECT count(*) FROM schema_migrations").Scan(&recorded); err != nil {
@@ -313,15 +325,16 @@ func TestUpRollsBackAFailedMigration(t *testing.T) {
 	t.Parallel()
 	conn := pgtest.New(t).Connect(t)
 	broken := withRealMigrations(t, map[string]string{
-		"0002_broken.sql": "CREATE TABLE half (id int); SELECT 1/0;",
-		"0003_after.sql":  "CREATE TABLE after_broken (id int);",
+		"9002_broken.sql": "CREATE TABLE half (id int); SELECT 1/0;",
+		"9003_after.sql":  "CREATE TABLE after_broken (id int);",
 	})
+	base := realVersions(t)
 	applied, err := migrate.Up(t.Context(), conn, broken)
-	if err == nil || !strings.Contains(err.Error(), "0002_broken.sql") {
-		t.Fatalf("Up = %v, want an error naming 0002_broken.sql", err)
+	if err == nil || !strings.Contains(err.Error(), "9002_broken.sql") {
+		t.Fatalf("Up = %v, want an error naming 9002_broken.sql", err)
 	}
-	if got := fmt.Sprint(versions(applied)); got != "[1]" {
-		t.Fatalf("applied %s before the failure, want [1]", got)
+	if got, want := fmt.Sprint(versions(applied)), fmt.Sprint(base); got != want {
+		t.Fatalf("applied %s before the failure, want %s", got, want)
 	}
 	for _, table := range []string{"half", "after_broken"} {
 		var exists bool
@@ -336,28 +349,28 @@ func TestUpRollsBackAFailedMigration(t *testing.T) {
 	if err := conn.QueryRow(t.Context(), "SELECT count(*) FROM schema_migrations").Scan(&recorded); err != nil {
 		t.Fatal(err)
 	}
-	if recorded != 1 {
-		t.Fatalf("schema_migrations has %d rows, want 1", recorded)
+	if recorded != len(base) {
+		t.Fatalf("schema_migrations has %d rows, want %d", recorded, len(base))
 	}
 
 	fixed := withRealMigrations(t, map[string]string{
-		"0002_broken.sql": "CREATE TABLE half (id int);",
-		"0003_after.sql":  "CREATE TABLE after_broken (id int);",
+		"9002_broken.sql": "CREATE TABLE half (id int);",
+		"9003_after.sql":  "CREATE TABLE after_broken (id int);",
 	})
 	applied, err = migrate.Up(t.Context(), conn, fixed)
 	if err != nil {
 		t.Fatalf("Up after the fix: %v", err)
 	}
-	if got := fmt.Sprint(versions(applied)); got != "[2 3]" {
-		t.Fatalf("applied %s after the fix, want [2 3]", got)
+	if got := fmt.Sprint(versions(applied)); got != "[9002 9003]" {
+		t.Fatalf("applied %s after the fix, want [9002 9003]", got)
 	}
 }
 
 func TestUpRefusesInconsistentHistory(t *testing.T) {
 	t.Parallel()
 	base := map[string]string{
-		"0002_a.sql": "CREATE TABLE a (id int);",
-		"0004_c.sql": "CREATE TABLE c (id int);",
+		"9002_a.sql": "CREATE TABLE a (id int);",
+		"9004_c.sql": "CREATE TABLE c (id int);",
 	}
 	tests := []struct {
 		name    string
@@ -366,18 +379,18 @@ func TestUpRefusesInconsistentHistory(t *testing.T) {
 	}{
 		{
 			name:    "applied migration edited",
-			next:    map[string]string{"0002_a.sql": "CREATE TABLE a (id bigint);", "0004_c.sql": base["0004_c.sql"], "0005_d.sql": "CREATE TABLE d (id int);"},
+			next:    map[string]string{"9002_a.sql": "CREATE TABLE a (id bigint);", "9004_c.sql": base["9004_c.sql"], "9005_d.sql": "CREATE TABLE d (id int);"},
 			wantErr: "changed after it was applied",
 		},
 		{
 			name:    "applied migration missing",
-			next:    map[string]string{"0002_a.sql": base["0002_a.sql"], "0005_d.sql": "CREATE TABLE d (id int);"},
+			next:    map[string]string{"9002_a.sql": base["9002_a.sql"], "9005_d.sql": "CREATE TABLE d (id int);"},
 			wantErr: "doesn't have",
 		},
 		{
 			name:    "new migration older than the newest applied",
-			next:    map[string]string{"0002_a.sql": base["0002_a.sql"], "0003_b.sql": "CREATE TABLE b (id int);", "0004_c.sql": base["0004_c.sql"]},
-			wantErr: "older than applied migration 4",
+			next:    map[string]string{"9002_a.sql": base["9002_a.sql"], "9003_b.sql": "CREATE TABLE b (id int);", "9004_c.sql": base["9004_c.sql"]},
+			wantErr: "older than applied migration 9004",
 		},
 	}
 	for _, tt := range tests {
