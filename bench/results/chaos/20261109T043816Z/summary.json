@@ -1,0 +1,934 @@
+{
+  "started": "2026-11-09T04:38:16.174104636Z",
+  "finished": "2026-11-09T05:25:37.827342507Z",
+  "base_seed": 204285923,
+  "settings": {
+    "lease_ms": 2000,
+    "heartbeat_ms": 500,
+    "fault_window_ms": 30000,
+    "run_timeout_ms": 120000,
+    "jobs_per_run": 2000,
+    "shops": 5,
+    "max_job_sleep_ms": 250
+  },
+  "runs": [
+    {
+      "seed": 204285923,
+      "passed": true,
+      "duration_ms": 27883,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 4,
+      "file": "run-001-seed-204285923.json"
+    },
+    {
+      "seed": 204285924,
+      "passed": true,
+      "duration_ms": 24299,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 3,
+      "file": "run-002-seed-204285924.json"
+    },
+    {
+      "seed": 204285925,
+      "passed": true,
+      "duration_ms": 25651,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 8,
+      "file": "run-003-seed-204285925.json"
+    },
+    {
+      "seed": 204285926,
+      "passed": true,
+      "duration_ms": 26732,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 3,
+      "file": "run-004-seed-204285926.json"
+    },
+    {
+      "seed": 204285927,
+      "passed": true,
+      "duration_ms": 32286,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 8,
+      "file": "run-005-seed-204285927.json"
+    },
+    {
+      "seed": 204285928,
+      "passed": true,
+      "duration_ms": 30000,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 6,
+      "file": "run-006-seed-204285928.json"
+    },
+    {
+      "seed": 204285929,
+      "passed": true,
+      "duration_ms": 27012,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 6,
+      "file": "run-007-seed-204285929.json"
+    },
+    {
+      "seed": 204285930,
+      "passed": true,
+      "duration_ms": 29614,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 6,
+      "file": "run-008-seed-204285930.json"
+    },
+    {
+      "seed": 204285931,
+      "passed": true,
+      "duration_ms": 21056,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 3,
+      "file": "run-009-seed-204285931.json"
+    },
+    {
+      "seed": 204285932,
+      "passed": true,
+      "duration_ms": 22770,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 3,
+      "file": "run-010-seed-204285932.json"
+    },
+    {
+      "seed": 204285933,
+      "passed": true,
+      "duration_ms": 27422,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 3,
+      "file": "run-011-seed-204285933.json"
+    },
+    {
+      "seed": 204285934,
+      "passed": true,
+      "duration_ms": 25306,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 5,
+      "file": "run-012-seed-204285934.json"
+    },
+    {
+      "seed": 204285935,
+      "passed": true,
+      "duration_ms": 29663,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 5,
+      "file": "run-013-seed-204285935.json"
+    },
+    {
+      "seed": 204285936,
+      "passed": true,
+      "duration_ms": 29283,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 8,
+      "file": "run-014-seed-204285936.json"
+    },
+    {
+      "seed": 204285937,
+      "passed": true,
+      "duration_ms": 30527,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 6,
+      "file": "run-015-seed-204285937.json"
+    },
+    {
+      "seed": 204285938,
+      "passed": true,
+      "duration_ms": 26237,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 6,
+      "file": "run-016-seed-204285938.json"
+    },
+    {
+      "seed": 204285939,
+      "passed": true,
+      "duration_ms": 26575,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 4,
+      "file": "run-017-seed-204285939.json"
+    },
+    {
+      "seed": 204285940,
+      "passed": false,
+      "duration_ms": 26827,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 6,
+      "failures": [
+        "workers_and_dispatcher_reach_postgres_through_toxiproxy"
+      ],
+      "file": "run-018-seed-204285940.json"
+    },
+    {
+      "seed": 204285941,
+      "passed": true,
+      "duration_ms": 23897,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 5,
+      "file": "run-019-seed-204285941.json"
+    },
+    {
+      "seed": 204285942,
+      "passed": true,
+      "duration_ms": 29324,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 8,
+      "file": "run-020-seed-204285942.json"
+    },
+    {
+      "seed": 204285943,
+      "passed": true,
+      "duration_ms": 24065,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 5,
+      "file": "run-021-seed-204285943.json"
+    },
+    {
+      "seed": 204285944,
+      "passed": true,
+      "duration_ms": 27110,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 8,
+      "file": "run-022-seed-204285944.json"
+    },
+    {
+      "seed": 204285945,
+      "passed": true,
+      "duration_ms": 26420,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 4,
+      "file": "run-023-seed-204285945.json"
+    },
+    {
+      "seed": 204285946,
+      "passed": true,
+      "duration_ms": 29555,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 8,
+      "file": "run-024-seed-204285946.json"
+    },
+    {
+      "seed": 204285947,
+      "passed": true,
+      "duration_ms": 29258,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 8,
+      "file": "run-025-seed-204285947.json"
+    },
+    {
+      "seed": 204285948,
+      "passed": true,
+      "duration_ms": 28355,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 5,
+      "file": "run-026-seed-204285948.json"
+    },
+    {
+      "seed": 204285949,
+      "passed": true,
+      "duration_ms": 27412,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 4,
+      "file": "run-027-seed-204285949.json"
+    },
+    {
+      "seed": 204285950,
+      "passed": true,
+      "duration_ms": 33652,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 6,
+      "file": "run-028-seed-204285950.json"
+    },
+    {
+      "seed": 204285951,
+      "passed": true,
+      "duration_ms": 31736,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 7,
+      "file": "run-029-seed-204285951.json"
+    },
+    {
+      "seed": 204285952,
+      "passed": true,
+      "duration_ms": 28579,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 3,
+      "file": "run-030-seed-204285952.json"
+    },
+    {
+      "seed": 204285953,
+      "passed": true,
+      "duration_ms": 26016,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 3,
+      "file": "run-031-seed-204285953.json"
+    },
+    {
+      "seed": 204285954,
+      "passed": true,
+      "duration_ms": 26348,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 8,
+      "file": "run-032-seed-204285954.json"
+    },
+    {
+      "seed": 204285955,
+      "passed": true,
+      "duration_ms": 34058,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 8,
+      "file": "run-033-seed-204285955.json"
+    },
+    {
+      "seed": 204285956,
+      "passed": true,
+      "duration_ms": 28775,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 7,
+      "file": "run-034-seed-204285956.json"
+    },
+    {
+      "seed": 204285957,
+      "passed": true,
+      "duration_ms": 24522,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 6,
+      "file": "run-035-seed-204285957.json"
+    },
+    {
+      "seed": 204285958,
+      "passed": true,
+      "duration_ms": 32455,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 7,
+      "file": "run-036-seed-204285958.json"
+    },
+    {
+      "seed": 204285959,
+      "passed": true,
+      "duration_ms": 29699,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 6,
+      "file": "run-037-seed-204285959.json"
+    },
+    {
+      "seed": 204285960,
+      "passed": true,
+      "duration_ms": 18790,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 3,
+      "file": "run-038-seed-204285960.json"
+    },
+    {
+      "seed": 204285961,
+      "passed": true,
+      "duration_ms": 27047,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 3,
+      "file": "run-039-seed-204285961.json"
+    },
+    {
+      "seed": 204285962,
+      "passed": true,
+      "duration_ms": 29002,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 6,
+      "file": "run-040-seed-204285962.json"
+    },
+    {
+      "seed": 204285963,
+      "passed": true,
+      "duration_ms": 28172,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 7,
+      "file": "run-041-seed-204285963.json"
+    },
+    {
+      "seed": 204285964,
+      "passed": true,
+      "duration_ms": 30114,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 8,
+      "file": "run-042-seed-204285964.json"
+    },
+    {
+      "seed": 204285965,
+      "passed": true,
+      "duration_ms": 28042,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 6,
+      "file": "run-043-seed-204285965.json"
+    },
+    {
+      "seed": 204285966,
+      "passed": true,
+      "duration_ms": 29239,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 3,
+      "file": "run-044-seed-204285966.json"
+    },
+    {
+      "seed": 204285967,
+      "passed": true,
+      "duration_ms": 25109,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 3,
+      "file": "run-045-seed-204285967.json"
+    },
+    {
+      "seed": 204285968,
+      "passed": true,
+      "duration_ms": 28037,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 6,
+      "file": "run-046-seed-204285968.json"
+    },
+    {
+      "seed": 204285969,
+      "passed": true,
+      "duration_ms": 22228,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 3,
+      "file": "run-047-seed-204285969.json"
+    },
+    {
+      "seed": 204285970,
+      "passed": true,
+      "duration_ms": 28001,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 4,
+      "file": "run-048-seed-204285970.json"
+    },
+    {
+      "seed": 204285971,
+      "passed": true,
+      "duration_ms": 25405,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 5,
+      "file": "run-049-seed-204285971.json"
+    },
+    {
+      "seed": 204285972,
+      "passed": true,
+      "duration_ms": 29783,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 5,
+      "file": "run-050-seed-204285972.json"
+    },
+    {
+      "seed": 204285973,
+      "passed": true,
+      "duration_ms": 24976,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 5,
+      "file": "run-051-seed-204285973.json"
+    },
+    {
+      "seed": 204285974,
+      "passed": true,
+      "duration_ms": 25924,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 3,
+      "file": "run-052-seed-204285974.json"
+    },
+    {
+      "seed": 204285975,
+      "passed": true,
+      "duration_ms": 27141,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 6,
+      "file": "run-053-seed-204285975.json"
+    },
+    {
+      "seed": 204285976,
+      "passed": false,
+      "duration_ms": 28294,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 8,
+      "failures": [
+        "workers_and_dispatcher_reach_postgres_through_toxiproxy"
+      ],
+      "file": "run-054-seed-204285976.json"
+    },
+    {
+      "seed": 204285977,
+      "passed": true,
+      "duration_ms": 27226,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 4,
+      "file": "run-055-seed-204285977.json"
+    },
+    {
+      "seed": 204285978,
+      "passed": true,
+      "duration_ms": 28233,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 7,
+      "file": "run-056-seed-204285978.json"
+    },
+    {
+      "seed": 204285979,
+      "passed": true,
+      "duration_ms": 36946,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 8,
+      "file": "run-057-seed-204285979.json"
+    },
+    {
+      "seed": 204285980,
+      "passed": true,
+      "duration_ms": 31073,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 5,
+      "file": "run-058-seed-204285980.json"
+    },
+    {
+      "seed": 204285981,
+      "passed": true,
+      "duration_ms": 27050,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 7,
+      "file": "run-059-seed-204285981.json"
+    },
+    {
+      "seed": 204285982,
+      "passed": true,
+      "duration_ms": 30539,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 8,
+      "file": "run-060-seed-204285982.json"
+    },
+    {
+      "seed": 204285983,
+      "passed": true,
+      "duration_ms": 22521,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 3,
+      "file": "run-061-seed-204285983.json"
+    },
+    {
+      "seed": 204285984,
+      "passed": true,
+      "duration_ms": 29353,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 4,
+      "file": "run-062-seed-204285984.json"
+    },
+    {
+      "seed": 204285985,
+      "passed": true,
+      "duration_ms": 33998,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 8,
+      "file": "run-063-seed-204285985.json"
+    },
+    {
+      "seed": 204285986,
+      "passed": true,
+      "duration_ms": 35737,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 7,
+      "file": "run-064-seed-204285986.json"
+    },
+    {
+      "seed": 204285987,
+      "passed": true,
+      "duration_ms": 29698,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 7,
+      "file": "run-065-seed-204285987.json"
+    },
+    {
+      "seed": 204285988,
+      "passed": true,
+      "duration_ms": 26881,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 7,
+      "file": "run-066-seed-204285988.json"
+    },
+    {
+      "seed": 204285989,
+      "passed": true,
+      "duration_ms": 19276,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 3,
+      "file": "run-067-seed-204285989.json"
+    },
+    {
+      "seed": 204285990,
+      "passed": true,
+      "duration_ms": 24212,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 5,
+      "file": "run-068-seed-204285990.json"
+    },
+    {
+      "seed": 204285991,
+      "passed": true,
+      "duration_ms": 24687,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 5,
+      "file": "run-069-seed-204285991.json"
+    },
+    {
+      "seed": 204285992,
+      "passed": true,
+      "duration_ms": 29101,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 6,
+      "file": "run-070-seed-204285992.json"
+    },
+    {
+      "seed": 204285993,
+      "passed": true,
+      "duration_ms": 31388,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 6,
+      "file": "run-071-seed-204285993.json"
+    },
+    {
+      "seed": 204285994,
+      "passed": true,
+      "duration_ms": 25850,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 4,
+      "file": "run-072-seed-204285994.json"
+    },
+    {
+      "seed": 204285995,
+      "passed": true,
+      "duration_ms": 25480,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 4,
+      "file": "run-073-seed-204285995.json"
+    },
+    {
+      "seed": 204285996,
+      "passed": true,
+      "duration_ms": 34704,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 4,
+      "file": "run-074-seed-204285996.json"
+    },
+    {
+      "seed": 204285997,
+      "passed": true,
+      "duration_ms": 34484,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 8,
+      "file": "run-075-seed-204285997.json"
+    },
+    {
+      "seed": 204285998,
+      "passed": true,
+      "duration_ms": 28242,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 3,
+      "file": "run-076-seed-204285998.json"
+    },
+    {
+      "seed": 204285999,
+      "passed": true,
+      "duration_ms": 24173,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 4,
+      "file": "run-077-seed-204285999.json"
+    },
+    {
+      "seed": 204286000,
+      "passed": true,
+      "duration_ms": 24571,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 3,
+      "file": "run-078-seed-204286000.json"
+    },
+    {
+      "seed": 204286001,
+      "passed": true,
+      "duration_ms": 28622,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 8,
+      "file": "run-079-seed-204286001.json"
+    },
+    {
+      "seed": 204286002,
+      "passed": true,
+      "duration_ms": 33548,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 6,
+      "file": "run-080-seed-204286002.json"
+    },
+    {
+      "seed": 204286003,
+      "passed": true,
+      "duration_ms": 29459,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 8,
+      "file": "run-081-seed-204286003.json"
+    },
+    {
+      "seed": 204286004,
+      "passed": true,
+      "duration_ms": 28924,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 7,
+      "file": "run-082-seed-204286004.json"
+    },
+    {
+      "seed": 204286005,
+      "passed": true,
+      "duration_ms": 25191,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 5,
+      "file": "run-083-seed-204286005.json"
+    },
+    {
+      "seed": 204286006,
+      "passed": true,
+      "duration_ms": 28832,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 4,
+      "file": "run-084-seed-204286006.json"
+    },
+    {
+      "seed": 204286007,
+      "passed": true,
+      "duration_ms": 27575,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 4,
+      "file": "run-085-seed-204286007.json"
+    },
+    {
+      "seed": 204286008,
+      "passed": true,
+      "duration_ms": 21529,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 3,
+      "file": "run-086-seed-204286008.json"
+    },
+    {
+      "seed": 204286009,
+      "passed": true,
+      "duration_ms": 28779,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 8,
+      "file": "run-087-seed-204286009.json"
+    },
+    {
+      "seed": 204286010,
+      "passed": true,
+      "duration_ms": 24835,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 4,
+      "file": "run-088-seed-204286010.json"
+    },
+    {
+      "seed": 204286011,
+      "passed": true,
+      "duration_ms": 28239,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 5,
+      "file": "run-089-seed-204286011.json"
+    },
+    {
+      "seed": 204286012,
+      "passed": true,
+      "duration_ms": 24597,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 3,
+      "file": "run-090-seed-204286012.json"
+    },
+    {
+      "seed": 204286013,
+      "passed": true,
+      "duration_ms": 31552,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 8,
+      "file": "run-091-seed-204286013.json"
+    },
+    {
+      "seed": 204286014,
+      "passed": true,
+      "duration_ms": 29592,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 6,
+      "file": "run-092-seed-204286014.json"
+    },
+    {
+      "seed": 204286015,
+      "passed": true,
+      "duration_ms": 32383,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 6,
+      "file": "run-093-seed-204286015.json"
+    },
+    {
+      "seed": 204286016,
+      "passed": true,
+      "duration_ms": 28294,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 3,
+      "file": "run-094-seed-204286016.json"
+    },
+    {
+      "seed": 204286017,
+      "passed": true,
+      "duration_ms": 25888,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 5,
+      "file": "run-095-seed-204286017.json"
+    },
+    {
+      "seed": 204286018,
+      "passed": true,
+      "duration_ms": 32050,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 4,
+      "file": "run-096-seed-204286018.json"
+    },
+    {
+      "seed": 204286019,
+      "passed": true,
+      "duration_ms": 30174,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 5,
+      "file": "run-097-seed-204286019.json"
+    },
+    {
+      "seed": 204286020,
+      "passed": true,
+      "duration_ms": 25172,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 4,
+      "file": "run-098-seed-204286020.json"
+    },
+    {
+      "seed": 204286021,
+      "passed": true,
+      "duration_ms": 25516,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 5,
+      "file": "run-099-seed-204286021.json"
+    },
+    {
+      "seed": 204286022,
+      "passed": true,
+      "duration_ms": 32513,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 8,
+      "file": "run-100-seed-204286022.json"
+    }
+  ],
+  "passed": 98,
+  "failed": 2,
+  "recovery": {
+    "started": "2026-11-09T05:25:06.335670215Z",
+    "lease_ms": 30000,
+    "reaper_scan_ms": 5000,
+    "target_ms": 35000,
+    "killed": "worker-1",
+    "orphans": 4,
+    "recovery_ms": 31249,
+    "passed": true
+  }
+}

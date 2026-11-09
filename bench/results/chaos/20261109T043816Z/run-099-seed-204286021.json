@@ -1,0 +1,94 @@
+{
+  "seed": 204286021,
+  "started": "2026-11-09T05:24:08.017097757Z",
+  "duration_ms": 25516,
+  "passed": true,
+  "jobs": {
+    "planned": 2000,
+    "accepted": 2000,
+    "enqueue_retries": 0,
+    "duplicates": 0,
+    "completed": 2000,
+    "dead": 0,
+    "not_terminal": 0
+  },
+  "faults": [
+    {
+      "kind": "pause_worker",
+      "target": "worker-1",
+      "at_ms": 1029,
+      "duration_ms": 3999,
+      "applied_ms": 1030,
+      "reverted_ms": 5088
+    },
+    {
+      "kind": "pause_worker",
+      "target": "worker-2",
+      "at_ms": 3777,
+      "duration_ms": 4577,
+      "applied_ms": 3777,
+      "reverted_ms": 8393
+    },
+    {
+      "kind": "kill_worker",
+      "target": "worker-1",
+      "at_ms": 8345,
+      "duration_ms": 1678,
+      "applied_ms": 8349,
+      "reverted_ms": 10189
+    },
+    {
+      "kind": "pause_worker",
+      "target": "worker-2",
+      "at_ms": 9221,
+      "duration_ms": 3075,
+      "applied_ms": 9223,
+      "reverted_ms": 12370
+    },
+    {
+      "kind": "restart_postgres",
+      "target": "postgres",
+      "at_ms": 13645,
+      "duration_ms": 0,
+      "applied_ms": 13646,
+      "reverted_ms": 13793
+    }
+  ],
+  "backlog_samples": {
+    "taken": 25,
+    "skipped": 0,
+    "mismatched": 0
+  },
+  "checks": [
+    {
+      "name": "q1_every_accepted_job_completed_or_dead",
+      "passed": true,
+      "detail": "2000 accepted: 2000 completed, 0 dead"
+    },
+    {
+      "name": "q4_one_job_per_dedupe_key",
+      "passed": true,
+      "detail": "2000 keys, 2000 jobs"
+    },
+    {
+      "name": "q3_no_overlapping_leases",
+      "passed": true,
+      "detail": "2036 leases checked"
+    },
+    {
+      "name": "backlog_counter_matches_real_count",
+      "passed": true,
+      "detail": "25 samples during the run and one at the end matched"
+    },
+    {
+      "name": "run_tx_effect_applied_once",
+      "passed": true,
+      "detail": "2000 effects"
+    },
+    {
+      "name": "workers_and_dispatcher_reach_postgres_through_toxiproxy",
+      "passed": true,
+      "detail": "18 connections, all from toxiproxy"
+    }
+  ]
+}
