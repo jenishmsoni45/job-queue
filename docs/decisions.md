@@ -52,6 +52,7 @@ Each entry gives the question, the options considered, the decision and its cons
 | D-044 | What the 30 s chaos run length means | Phase 3: D-023 target undefined | Decided |
 | D-045 | What makes a dedupe key valid | Phase 3: follows D-039 | Decided |
 | D-046 | Which seeds `make chaos` uses | Phase 3: gap in D-023 | Decided |
+| D-047 | The row lock claims and the reaper take | Phase 3: found by the AC-7.1 test | Decided |
 
 ---
 
@@ -695,3 +696,19 @@ Each entry gives the question, the options considered, the decision and its cons
   - Each `make chaos` picks a random base seed, prints it and records it. Run *i* uses the base plus *i*.
   - `CHAOS_BASE_SEED=<n>` repeats a whole batch, and `CHAOS_SEED=<n> make chaos-one` replays one run.
 - **Why not B:** every batch would run the same 100 schedules and never explore new ones.
+
+## D-047 · The row lock claims and the reaper take
+
+- **Date:** 2026-11-08 · **Phase:** 3 · **Source:** Found mid-phase by the AC-7.1 test. `run.Step` writes an `idempotency_keys` row, and that table's foreign key to `jobs` takes a `FOR KEY SHARE` lock on the job's row until the step's transaction ends. Design §6.3 and §9 picked rows with `FOR UPDATE SKIP LOCKED`, and `FOR UPDATE` clashes with `FOR KEY SHARE`. So while a step was open, the reaper and every claim silently skipped the job. A paused, partitioned or stuck worker inside a step would keep its expired job `running` until Postgres noticed the dead connection, possibly hours later, which breaks design §14 and NFR-10, and a step that never returns would put Q1 at risk. A throwaway-database probe confirmed it: with a child row's transaction open, `FOR UPDATE SKIP LOCKED` saw 0 rows, `FOR NO KEY UPDATE SKIP LOCKED` saw 1, and a plain `UPDATE` went through without waiting.
+- **Options:**
+  - A. Claims and the reaper lock with `FOR NO KEY UPDATE SKIP LOCKED`.
+  - B. Drop the foreign key from `idempotency_keys` to `jobs`, and have the pruner delete a pruned job's keys itself.
+  - C. Keep the design, and document that a job can't be reaped or claimed while one of its steps is open.
+- **Decision:** A (the user's choice). Design §6.3, §9 and the Q3 row of §13 now say so.
+  - `FOR NO KEY UPDATE` still conflicts with itself, so claimers and the reaper exclude each other exactly as before, and Q3 is unchanged. It does not conflict with the `FOR KEY SHARE` lock a foreign key takes.
+  - Both statements change only non-key columns, which is what `FOR NO KEY UPDATE` is for. Fenced writes are plain `UPDATE`s, which already take that lock.
+  - The pruner's deletes keep `FOR UPDATE`, which a delete needs. A completed job with a step still open is skipped and pruned on a later pass.
+  - D-002 says the dispatcher claims "with `FOR UPDATE SKIP LOCKED`". This entry supersedes that detail.
+- **Why not B:** a step could be recorded for a job that doesn't exist, and claims would still clash with any other table that references `jobs`, such as a handler's own effects in `run.Tx()`.
+- **Why not C:** the risk to Q1 and NFR-10 would stay.
+- **Consequences:** store tests hold a step's transaction open and check that the reaper still requeues the job and a claim still takes it.

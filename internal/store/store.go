@@ -1,6 +1,6 @@
 // Package store holds the Postgres queries for jobs and shop state (design §3,
-// §5–§9): seeding from config, enqueue, the claim transaction, heartbeats, the
-// fenced result writes and the reaper.
+// §5–§9): seeding from config, enqueue with dedupe, the claim transaction,
+// heartbeats, the fenced result writes, the reaper and the pruner.
 //
 // Every lease, claim and fencing time comes from the database clock, read with
 // statement_timestamp() (D-036). now() is frozen at the start of a transaction,
@@ -113,14 +113,75 @@ type NewJob struct {
 	Kind    string
 	Payload json.RawMessage // a JSON object; the api role validates it
 	RunAt   *time.Time      // nil means runnable at once
+	// DedupeKey, if set, makes the enqueue idempotent for this shop within the
+	// dedupe window (D-018): X-Shopify-Webhook-Id for a webhook, or a caller's key.
+	DedupeKey string
 }
 
+// Enqueued is the outcome of an enqueue.
+type Enqueued struct {
+	ID int64
+	// Duplicate means the shop already had the dedupe key: ID is the existing
+	// job, and nothing was created (AC-1.4).
+	Duplicate bool
+}
+
+// errKeyTaken means a concurrent enqueue committed the same dedupe key between
+// this enqueue's check and its insert.
+var errKeyTaken = errors.New("store: dedupe key taken by a concurrent enqueue")
+
+// maxKeyRetries bounds how often an enqueue starts over because its dedupe key
+// was taken and then vanished again (pruned) before it could be read.
+const maxKeyRetries = 3
+
 // Enqueue inserts one queued job and adds it to the shop's backlog, in one
-// transaction (design §5.1, without dedupe and admission, which arrive in phases
-// 3 and 4). The shop_state row lock serializes the shop's enqueues, as admission
-// will need. It notifies the dispatcher at commit. On any error nothing is created.
-func Enqueue(ctx context.Context, db DB, j NewJob) (id int64, err error) {
+// transaction (design §5.1, without admission, which phase 4 adds). It
+// notifies the dispatcher at commit. On any error nothing is created.
+//
+// With a dedupe key, a key the shop already has returns that job as a
+// duplicate, and creates nothing (D-018). Two enqueues with the same new key
+// can both pass that check; the shop_state row lock then serializes them, and
+// the second one's key insert conflicts. It rolls back and returns the first
+// one's job (Q4).
+func Enqueue(ctx context.Context, db DB, j NewJob) (Enqueued, error) {
+	for range maxKeyRetries {
+		res, err := enqueueOnce(ctx, db, j)
+		if !errors.Is(err, errKeyTaken) {
+			return res, err
+		}
+		id, found, err := lookupKey(ctx, db, j.Shop, j.DedupeKey)
+		if err != nil {
+			return Enqueued{}, err
+		}
+		if found {
+			return Enqueued{ID: id, Duplicate: true}, nil
+		}
+	}
+	return Enqueued{}, fmt.Errorf("store: enqueue: dedupe key %q kept changing", j.DedupeKey)
+}
+
+func enqueueOnce(ctx context.Context, db DB, j NewJob) (res Enqueued, err error) {
 	err = pgx.BeginFunc(ctx, db, func(tx pgx.Tx) error {
+		var cost int32
+		if err := tx.QueryRow(ctx, `SELECT cost FROM job_kinds WHERE kind = $1`, j.Kind).Scan(&cost); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return ErrUnknownKind
+			}
+			return fmt.Errorf("store: read job kind: %w", err)
+		}
+		// Dedupe runs before the shop lock (and, from phase 4, admission), so a
+		// duplicate never waits on the hot row and gets 200 even at the backlog
+		// limit (D-018).
+		if j.DedupeKey != "" {
+			id, found, err := lookupKey(ctx, tx, j.Shop, j.DedupeKey)
+			if err != nil {
+				return err
+			}
+			if found {
+				res = Enqueued{ID: id, Duplicate: true}
+				return nil
+			}
+		}
 		var backlog int32
 		if err := tx.QueryRow(ctx,
 			`SELECT backlog FROM shop_state WHERE shop_id = $1 FOR UPDATE`, j.Shop,
@@ -130,16 +191,10 @@ func Enqueue(ctx context.Context, db DB, j NewJob) (id int64, err error) {
 			}
 			return fmt.Errorf("store: lock shop_state: %w", err)
 		}
-		var cost int32
-		if err := tx.QueryRow(ctx, `SELECT cost FROM job_kinds WHERE kind = $1`, j.Kind).Scan(&cost); err != nil {
-			if errors.Is(err, pgx.ErrNoRows) {
-				return ErrUnknownKind
-			}
-			return fmt.Errorf("store: read job kind: %w", err)
-		}
 		// enqueued_at defaults to now(), the transaction's start, and run_at and
 		// first_runnable_at use the same instant, so a job enqueued without run_at
 		// has run_at = first_runnable_at = enqueued_at (D-011).
+		var id int64
 		if err := tx.QueryRow(ctx, `
 			INSERT INTO jobs (shop_id, kind, cost, payload, state, run_at, first_runnable_at)
 			VALUES ($1, $2, $3, $4, 'queued', coalesce($5, now()), greatest(now(), coalesce($5, now())))
@@ -151,18 +206,50 @@ func Enqueue(ctx context.Context, db DB, j NewJob) (id int64, err error) {
 			}
 			return fmt.Errorf("store: insert job: %w", err)
 		}
+		if j.DedupeKey != "" {
+			// The shop_state lock means any other enqueue of this key has committed
+			// or rolled back by now, so DO NOTHING sees a committed key.
+			tag, err := tx.Exec(ctx, `
+				INSERT INTO dedupe_keys (shop_id, key, job_id) VALUES ($1, $2, $3)
+				ON CONFLICT (shop_id, key) DO NOTHING`, j.Shop, j.DedupeKey, id)
+			if err != nil {
+				if isDataException(err) {
+					return fmt.Errorf("%w: dedupe key: %w", ErrInvalidPayload, err)
+				}
+				return fmt.Errorf("store: insert dedupe key: %w", err)
+			}
+			if tag.RowsAffected() == 0 {
+				return errKeyTaken // rolls back the job
+			}
+		}
 		if _, err := tx.Exec(ctx, `UPDATE shop_state SET backlog = backlog + 1 WHERE shop_id = $1`, j.Shop); err != nil {
 			return fmt.Errorf("store: count backlog: %w", err)
 		}
 		if _, err := tx.Exec(ctx, `SELECT pg_notify($1, $2)`, EnqueueNotifyChannel, j.Shop); err != nil {
 			return fmt.Errorf("store: notify: %w", err)
 		}
+		res = Enqueued{ID: id}
 		return nil
 	})
 	if err != nil {
-		return 0, err
+		return Enqueued{}, err
 	}
-	return id, nil
+	return res, nil
+}
+
+// lookupKey returns the job the shop's dedupe key points to, if the key exists.
+func lookupKey(ctx context.Context, db DB, shop, key string) (id int64, found bool, err error) {
+	err = db.QueryRow(ctx, `SELECT job_id FROM dedupe_keys WHERE shop_id = $1 AND key = $2`, shop, key).Scan(&id)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		return 0, false, nil
+	case err != nil:
+		if isDataException(err) {
+			return 0, false, fmt.Errorf("%w: dedupe key: %w", ErrInvalidPayload, err)
+		}
+		return 0, false, fmt.Errorf("store: read dedupe key: %w", err)
+	}
+	return id, true, nil
 }
 
 // Job is one row of the jobs table.
@@ -232,9 +319,11 @@ func (c Claimed) Fence() Fence { return Fence{JobID: c.ID, ClaimSeq: c.ClaimSeq,
 // and gives the i-th claimed job to owners[i] (design §6.3). This is the FIFO
 // claim without the cap step, which phase 4 adds between the two statements.
 //
-// FOR UPDATE SKIP LOCKED means concurrent claimers never wait on each other and
-// never take the same row, and the state check means only a queued job can be
-// claimed, so a job has at most one live lease (Q3).
+// FOR NO KEY UPDATE SKIP LOCKED means concurrent claimers never wait on each
+// other and never take the same row, and the state check means only a queued
+// job can be claimed, so a job has at most one live lease (Q3). It is not FOR
+// UPDATE, which would also skip a job whose row a foreign key has locked FOR
+// KEY SHARE, such as one with a run.Step transaction open (D-047).
 func Claim(ctx context.Context, db DB, owners []string) ([]Claimed, error) {
 	if len(owners) == 0 {
 		return nil, nil
@@ -246,7 +335,7 @@ func Claim(ctx context.Context, db DB, owners []string) ([]Claimed, error) {
 			 WHERE state = 'queued' AND run_at <= statement_timestamp()
 			 ORDER BY run_at, id
 			 LIMIT $1
-			 FOR UPDATE SKIP LOCKED`, len(owners))
+			 FOR NO KEY UPDATE SKIP LOCKED`, len(owners))
 		if err != nil {
 			return fmt.Errorf("store: claim candidates: %w", err)
 		}
@@ -435,7 +524,9 @@ type ReapResult struct {
 // Reap requeues up to limit jobs whose lease has expired by the database clock
 // (design §9). Each counts a failed attempt and is runnable at once (D-031), or
 // goes dead with "attempts exhausted" at the kind's max, leaving the backlog.
-// Rows a fenced write or heartbeat holds are skipped, not waited for.
+// Rows a fenced write or heartbeat holds are skipped, not waited for. Like
+// Claim, it locks FOR NO KEY UPDATE, so an open step of the job doesn't hide
+// its expired lease (D-047).
 func Reap(ctx context.Context, db DB, limit int) (ReapResult, error) {
 	var r ReapResult
 	err := db.QueryRow(ctx, `
@@ -444,7 +535,7 @@ func Reap(ctx context.Context, db DB, limit int) (ReapResult, error) {
 		   WHERE state = 'running' AND lease_expires_at <= statement_timestamp()
 		   ORDER BY lease_expires_at
 		   LIMIT $1
-		   FOR UPDATE SKIP LOCKED),
+		   FOR NO KEY UPDATE SKIP LOCKED),
 		reaped AS (
 		  UPDATE jobs j
 		     SET attempts = j.attempts + 1, lease_owner = NULL, lease_expires_at = NULL,
@@ -466,6 +557,94 @@ func Reap(ctx context.Context, db DB, limit int) (ReapResult, error) {
 		return ReapResult{}, fmt.Errorf("store: reap: %w", err)
 	}
 	return r, nil
+}
+
+// Retention says how long the pruner keeps finished rows (design §2, §9).
+type Retention struct {
+	Completed  time.Duration // completed jobs, counted from completed_at (D-015: 24 h)
+	Discarded  time.Duration // discarded dead jobs, counted from discarded_at (D-015: 24 h)
+	DedupeKeys time.Duration // dedupe keys, counted from created_at: the dedupe window (D-018: 7 days)
+}
+
+// Validate checks that every window is positive.
+func (r Retention) Validate() error {
+	if r.Completed <= 0 || r.Discarded <= 0 || r.DedupeKeys <= 0 {
+		return errors.New("store: every retention window must be positive")
+	}
+	return nil
+}
+
+// PruneResult counts the rows one pruner pass deleted.
+type PruneResult struct {
+	Completed  int
+	Discarded  int
+	DedupeKeys int
+}
+
+// The pruner's deletes (design §9). Each takes at most $2 rows past the window
+// $1 (in milliseconds) by the database clock, oldest first, and skips rows
+// another transaction holds. A job's idempotency keys go with it through
+// ON DELETE CASCADE.
+const (
+	pruneCompleted = `
+		DELETE FROM jobs WHERE state = 'completed' AND id IN (
+		  SELECT id FROM jobs
+		   WHERE state = 'completed' AND completed_at < statement_timestamp() - $1 * interval '1 millisecond'
+		   ORDER BY completed_at
+		   LIMIT $2
+		   FOR UPDATE SKIP LOCKED)`
+	pruneDiscarded = `
+		DELETE FROM jobs WHERE state = 'dead' AND id IN (
+		  SELECT id FROM jobs
+		   WHERE state = 'dead' AND discarded_at < statement_timestamp() - $1 * interval '1 millisecond'
+		   ORDER BY discarded_at
+		   LIMIT $2
+		   FOR UPDATE SKIP LOCKED)`
+	pruneDedupeKeys = `
+		DELETE FROM dedupe_keys d USING (
+		  SELECT shop_id, key FROM dedupe_keys
+		   WHERE created_at < statement_timestamp() - $1 * interval '1 millisecond'
+		   ORDER BY created_at
+		   LIMIT $2
+		   FOR UPDATE SKIP LOCKED) old
+		 WHERE d.shop_id = old.shop_id AND d.key = old.key`
+)
+
+// Prune deletes completed jobs and discarded jobs older than their retention
+// windows, and dedupe keys older than the dedupe window, in batches of at most
+// batch rows, repeating each delete while a batch comes back full (design §9).
+// Queued and running jobs, and dead jobs that aren't discarded, are never
+// touched (P3-7, D-041).
+func Prune(ctx context.Context, db DB, r Retention, batch int) (PruneResult, error) {
+	if err := r.Validate(); err != nil {
+		return PruneResult{}, err
+	}
+	if batch <= 0 {
+		return PruneResult{}, errors.New("store: the prune batch must be positive")
+	}
+	var res PruneResult
+	for _, step := range []struct {
+		what   string
+		sql    string
+		window time.Duration
+		count  *int
+	}{
+		{"completed jobs", pruneCompleted, r.Completed, &res.Completed},
+		{"discarded jobs", pruneDiscarded, r.Discarded, &res.Discarded},
+		{"dedupe keys", pruneDedupeKeys, r.DedupeKeys, &res.DedupeKeys},
+	} {
+		for {
+			tag, err := db.Exec(ctx, step.sql, step.window.Milliseconds(), batch)
+			if err != nil {
+				return res, fmt.Errorf("store: prune %s: %w", step.what, err)
+			}
+			*step.count += int(tag.RowsAffected())
+			if tag.RowsAffected() < int64(batch) {
+				break
+			}
+		}
+	}
+	return res, nil
 }
 
 // isDataException reports whether Postgres rejected a value: SQLSTATE class 22

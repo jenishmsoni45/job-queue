@@ -241,7 +241,7 @@ SELECT id, shop_id, cost FROM jobs
  WHERE state = 'queued' AND run_at <= statement_timestamp() AND <shop filter>
  ORDER BY run_at, id
  LIMIT $n
- FOR UPDATE SKIP LOCKED;
+ FOR NO KEY UPDATE SKIP LOCKED;     -- not FOR UPDATE (D-047)
 -- 2. For each distinct candidate shop, in shop-ID order (so no deadlocks):
 SELECT pg_advisory_xact_lock(hashtextextended('claim:' || $shop, 0));
 SELECT count(*) FROM jobs WHERE shop_id = $shop AND state = 'running';   -- exact room under the cap
@@ -260,7 +260,7 @@ COMMIT;   -- unkept candidates' row locks are released here
 ```
 
 - The advisory lock per shop is what makes Q5 hold, even if a second dispatcher is claiming during a split brain (D-002). A single leader needs it only as a safety net.
-- `FOR UPDATE SKIP LOCKED` means claimers never wait on each other's rows, and two claimers can never take the same row.
+- `FOR NO KEY UPDATE SKIP LOCKED` means claimers never wait on each other's rows, and two claimers can never take the same row. It is not `FOR UPDATE`, which also clashes with the `FOR KEY SHARE` lock a foreign key takes: while a run's step had written its `idempotency_keys` row, the job would be skipped by every claim (D-047).
 - The throttle check inside the transaction makes AC-6.2 exact: no claim that starts after a throttle commits can claim for that shop before `throttled_until`.
 - The dispatcher spends one token per claimed job, and `n` never exceeds the shop's whole tokens. Token buckets refill using the dispatcher's monotonic clock. They are rate limits, not leases or timestamps, so NFR-14 doesn't apply to them.
 
@@ -328,7 +328,7 @@ COMMIT;   -- unkept candidates' row locks are released here
   ```sql
   WITH expired AS (
     SELECT id FROM jobs WHERE state = 'running' AND lease_expires_at <= statement_timestamp()
-    ORDER BY lease_expires_at LIMIT 500 FOR UPDATE SKIP LOCKED)
+    ORDER BY lease_expires_at LIMIT 500 FOR NO KEY UPDATE SKIP LOCKED)   -- not FOR UPDATE (D-047)
   UPDATE jobs j
      SET attempts = j.attempts + 1, lease_owner = NULL, lease_expires_at = NULL, last_error = 'lease expired',
          state = CASE WHEN j.attempts + 1 >= k.max_attempts THEN 'dead' ELSE 'queued' END,
@@ -456,7 +456,7 @@ Handlers are registered by kind. Test-only kinds (used by chaos runs and invaria
 |---|---|---|---|
 | Q1 | No accepted job is lost: each ends completed or dead. | The enqueue commits before 201; Postgres keeps its durable defaults (`fsync` and `synchronous_commit` on); leases expire and the reaper requeues; attempts are bounded, so every job ends | `tests/chaos`: 100 seeded runs (§18); basic in-process version in phase 2 |
 | Q2 | A worker whose lease expired cannot complete, fail or reschedule the job. | The fenced predicate checks `claim_seq`, the owner, the state and `lease_expires_at > statement_timestamp()` (D-036); heartbeats can't revive an expired lease | `tests/invariants`: hold a handler past its lease, let a second worker claim and complete, release the first; its write affects 0 rows. Also: lease expired but not yet reaped; the write still affects 0 rows |
-| Q3 | At most one live lease per job. | `FOR UPDATE SKIP LOCKED` plus the state check on claim; `claim_seq` is monotonic | `tests/invariants` (rapid): many concurrent claimers on the real claim SQL, no dispatcher; each (job, `claim_seq`) has one owner, and lease intervals of one job never overlap by the DB clock |
+| Q3 | At most one live lease per job. | `FOR NO KEY UPDATE SKIP LOCKED` plus the state check on claim (D-047); `claim_seq` is monotonic | `tests/invariants` (rapid): many concurrent claimers on the real claim SQL, no dispatcher; each (job, `claim_seq`) has one owner, and lease intervals of one job never overlap by the DB clock |
 | Q4 | A webhook delivered k times creates exactly one job. | Dedupe keys in the enqueue transaction, unique on (shop, key), checked before admission | `tests/invariants`: k concurrent and k sequential deliveries of one webhook ID, including across the job's completion |
 | Q5 | A shop's running jobs never exceed `max_concurrency`. | Per-shop advisory lock plus an exact running count inside the claim transaction | dispatcher property test; two dispatchers claiming at once; running counts sampled during chaos and bench runs |
 | Q6 | Under saturation, each backlogged shop gets at least its weighted share of cost units, within tolerance. | Standard DRR with costs (§6.2); tolerance qᵢ + C (D-026) | `internal/scheduler` (rapid): random weights, costs and batch sizes; the bound checked after every claim |

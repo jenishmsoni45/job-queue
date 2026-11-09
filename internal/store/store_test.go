@@ -476,3 +476,323 @@ func TestCleanError(t *testing.T) {
 		t.Errorf("CleanError(long) has %d bytes, valid UTF-8 %v; want at most %d, cut on a rune", len(got), utf8.ValidString(got), store.LastErrorMax)
 	}
 }
+
+func countKeys(t *testing.T, env *queuetest.Env) int {
+	t.Helper()
+	var n int
+	if err := env.Pool.QueryRow(t.Context(), `SELECT count(*) FROM dedupe_keys`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+func enqueueKey(t *testing.T, env *queuetest.Env, shop, key string) store.Enqueued {
+	t.Helper()
+	res, err := store.Enqueue(t.Context(), env.Pool, store.NewJob{Shop: shop, Kind: testkinds.Sleep, Payload: json.RawMessage(`{}`), DedupeKey: key})
+	if err != nil {
+		t.Fatalf("enqueue %s/%s: %v", shop, key, err)
+	}
+	return res
+}
+
+// AC-1.4, D-018: a key the shop already has returns its job as a duplicate and
+// creates nothing, before and after the job completes. Keys are per shop.
+func TestEnqueueDedupe(t *testing.T) {
+	t.Parallel()
+	env := queuetest.New(t, nil)
+	first := enqueueKey(t, env, shopA, "webhook-1")
+	if first.Duplicate || first.ID == 0 {
+		t.Fatalf("first enqueue = %+v, want a new job", first)
+	}
+	if again := enqueueKey(t, env, shopA, "webhook-1"); !again.Duplicate || again.ID != first.ID {
+		t.Fatalf("repeat = %+v, want duplicate of %d", again, first.ID)
+	}
+	if n, b := countJobs(t, env), backlog(t, env, shopA); n != 1 || b != 1 {
+		t.Errorf("%d jobs, backlog %d after a duplicate; want 1 and 1", n, b)
+	}
+
+	other := enqueueKey(t, env, shopB, "webhook-1")
+	if other.Duplicate || other.ID == first.ID {
+		t.Errorf("same key for another shop = %+v, want a new job", other)
+	}
+
+	// Complete the first job: the key still dedupes (Q4 across completion).
+	c := claimOne(t, env, "w")
+	if ok, err := store.Complete(t.Context(), env.Pool, c.Fence()); err != nil || !ok {
+		t.Fatalf("complete = %v, %v", ok, err)
+	}
+	if again := enqueueKey(t, env, shopA, "webhook-1"); !again.Duplicate || again.ID != first.ID {
+		t.Errorf("after completion = %+v, want duplicate of %d", again, first.ID)
+	}
+	if n := countKeys(t, env); n != 2 {
+		t.Errorf("%d dedupe keys, want 2", n)
+	}
+	env.CheckBacklog(t)
+}
+
+// Design §5.1's conflict branch: two enqueues of one new key both pass the
+// dedupe check before either commits. The shop_state row lock serializes them;
+// the second one's key insert conflicts, its job rolls back, and it returns the
+// first one's job. The test holds the row lock until both have passed the
+// check, so the branch runs every time.
+func TestEnqueueDedupeConcurrentConflict(t *testing.T) {
+	t.Parallel()
+	env := queuetest.New(t, nil)
+	holder, err := env.Pool.Begin(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := holder.Exec(t.Context(), `SELECT 1 FROM shop_state WHERE shop_id = $1 FOR UPDATE`, shopA); err != nil {
+		t.Fatal(err)
+	}
+
+	const k = 4
+	results := make(chan store.Enqueued, k)
+	errs := make(chan error, k)
+	for range k {
+		go func() {
+			res, err := store.Enqueue(context.Background(), env.Pool,
+				store.NewJob{Shop: shopA, Kind: testkinds.Sleep, Payload: json.RawMessage(`{}`), DedupeKey: "race"})
+			results <- res
+			errs <- err
+		}()
+	}
+	// Every enqueue has passed the dedupe check once it waits on the row lock.
+	queuetest.Eventually(t, 10*time.Second, "every enqueue to wait on the shop_state lock", func() bool {
+		var waiting int
+		if err := env.Pool.QueryRow(t.Context(), `
+			SELECT count(*) FROM pg_stat_activity
+			 WHERE datname = current_database() AND wait_event_type = 'Lock' AND query LIKE '%shop_state%FOR UPDATE%'`,
+		).Scan(&waiting); err != nil {
+			t.Fatal(err)
+		}
+		return waiting == k
+	})
+	if err := holder.Rollback(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+
+	ids := map[int64]bool{}
+	created := 0
+	for range k {
+		if err := <-errs; err != nil {
+			t.Fatal(err)
+		}
+		res := <-results
+		ids[res.ID] = true
+		if !res.Duplicate {
+			created++
+		}
+	}
+	if len(ids) != 1 || created != 1 {
+		t.Errorf("%d enqueues gave IDs %v with %d created, want one job created once", k, ids, created)
+	}
+	if n, keys := countJobs(t, env), countKeys(t, env); n != 1 || keys != 1 {
+		t.Errorf("%d jobs and %d keys, want 1 and 1: a losing enqueue's job must roll back", n, keys)
+	}
+	env.CheckBacklog(t)
+}
+
+// A rejected enqueue with a dedupe key stores no key, so a later valid
+// enqueue with the same key creates its job.
+func TestRejectedEnqueueStoresNoKey(t *testing.T) {
+	t.Parallel()
+	env := queuetest.New(t, nil)
+	_, err := store.Enqueue(t.Context(), env.Pool,
+		store.NewJob{Shop: shopA, Kind: testkinds.Sleep, Payload: json.RawMessage(`{"a": "\u0000"}`), DedupeKey: "k"})
+	if !errors.Is(err, store.ErrInvalidPayload) {
+		t.Fatalf("err = %v, want ErrInvalidPayload", err)
+	}
+	if n := countKeys(t, env); n != 0 {
+		t.Fatalf("%d keys after a rejected enqueue", n)
+	}
+	if res := enqueueKey(t, env, shopA, "k"); res.Duplicate {
+		t.Errorf("the key of a rejected enqueue dedupes a later one: %+v", res)
+	}
+}
+
+// P3-7, D-041: the pruner deletes completed jobs, discarded jobs and dedupe
+// keys past their windows, by the database clock, and nothing else. A pruned
+// job's idempotency keys go with it.
+func TestPrune(t *testing.T) {
+	t.Parallel()
+	env := queuetest.New(t, nil)
+	ctx := t.Context()
+	insert := func(state, ages string) int64 {
+		t.Helper()
+		var id int64
+		// ages sets the timestamps a row's state needs, as intervals before now.
+		if err := env.Pool.QueryRow(ctx, `
+			INSERT INTO jobs (shop_id, kind, cost, payload, state, run_at, first_runnable_at, enqueued_at,
+			                  completed_at, dead_at, dead_reason, discarded_at, lease_owner, lease_expires_at)
+			SELECT $1, $2, 1, '{}', $3, now() - interval '30 days', now() - interval '30 days', now() - interval '30 days',
+			       CASE WHEN $3 = 'completed' THEN now() - a.age END,
+			       CASE WHEN $3 = 'dead' THEN now() - interval '30 days' END,
+			       CASE WHEN $3 = 'dead' THEN 'permanent' END,
+			       CASE WHEN $4 THEN now() - a.age END,
+			       CASE WHEN $3 = 'running' THEN 'w' END,
+			       CASE WHEN $3 = 'running' THEN now() + interval '1 hour' END
+			  FROM (SELECT $5::interval AS age) a
+			RETURNING id`, shopA, testkinds.Sleep, state, strings.HasPrefix(ages, "discarded"),
+			strings.TrimPrefix(ages, "discarded "),
+		).Scan(&id); err != nil {
+			t.Fatal(err)
+		}
+		return id
+	}
+	oldDone := insert("completed", "2 hours")
+	youngDone := insert("completed", "30 minutes")
+	oldDiscarded := insert("dead", "discarded 2 hours")
+	youngDiscarded := insert("dead", "discarded 30 minutes")
+	oldDead := insert("dead", "2 hours") // dead for 30 days, never discarded
+	oldQueued := insert("queued", "2 hours")
+	oldRunning := insert("running", "2 hours")
+	if _, err := env.Pool.Exec(ctx, `INSERT INTO idempotency_keys (job_id, step) VALUES ($1, 's'), ($2, 's')`, oldDone, youngDone); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.Pool.Exec(ctx, `
+		INSERT INTO dedupe_keys (shop_id, key, job_id, created_at) VALUES
+		  ($1, 'old', $2, now() - interval '3 hours'), ($1, 'young', $3, now() - interval '1 hour')`,
+		shopA, oldDone, youngDone); err != nil {
+		t.Fatal(err)
+	}
+
+	r := store.Retention{Completed: time.Hour, Discarded: time.Hour, DedupeKeys: 2 * time.Hour}
+	got, err := store.Prune(ctx, env.Pool, r, 5000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != (store.PruneResult{Completed: 1, Discarded: 1, DedupeKeys: 1}) {
+		t.Errorf("Prune = %+v, want one of each", got)
+	}
+	for _, id := range []int64{oldDone, oldDiscarded} {
+		if _, err := store.GetJob(ctx, env.Pool, id); !errors.Is(err, store.ErrNotFound) {
+			t.Errorf("job %d past its window still exists (%v)", id, err)
+		}
+	}
+	for _, id := range []int64{youngDone, youngDiscarded, oldDead, oldQueued, oldRunning} {
+		if _, err := store.GetJob(ctx, env.Pool, id); err != nil {
+			t.Errorf("job %d was pruned: %v", id, err)
+		}
+	}
+	var steps []int64
+	rows, err := env.Pool.Query(ctx, `SELECT job_id FROM idempotency_keys ORDER BY job_id`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			t.Fatal(err)
+		}
+		steps = append(steps, id)
+	}
+	if len(steps) != 1 || steps[0] != youngDone {
+		t.Errorf("idempotency keys left for jobs %v, want only %d's", steps, youngDone)
+	}
+	var keys []string
+	rows, err = env.Pool.Query(ctx, `SELECT key FROM dedupe_keys`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for rows.Next() {
+		var k string
+		if err := rows.Scan(&k); err != nil {
+			t.Fatal(err)
+		}
+		keys = append(keys, k)
+	}
+	if len(keys) != 1 || keys[0] != "young" {
+		t.Errorf("dedupe keys left %v, want [young]", keys)
+	}
+}
+
+// The pruner repeats each delete while a batch comes back full, so a backlog
+// larger than one batch is cleared in one pass.
+func TestPruneBatches(t *testing.T) {
+	t.Parallel()
+	env := queuetest.New(t, nil)
+	if _, err := env.Pool.Exec(t.Context(), `
+		INSERT INTO jobs (shop_id, kind, cost, payload, state, run_at, first_runnable_at, completed_at)
+		SELECT $1, $2, 1, '{}', 'completed', now(), now(), now() - interval '2 hours' FROM generate_series(1, 7)`,
+		shopA, testkinds.Sleep); err != nil {
+		t.Fatal(err)
+	}
+	r := store.Retention{Completed: time.Hour, Discarded: time.Hour, DedupeKeys: time.Hour}
+	got, err := store.Prune(t.Context(), env.Pool, r, 3)
+	if err != nil || got.Completed != 7 {
+		t.Errorf("Prune with batch 3 = %+v, %v; want all 7 completed jobs", got, err)
+	}
+	if _, err := store.Prune(t.Context(), env.Pool, store.Retention{}, 3); err == nil {
+		t.Error("Prune accepted zero retention windows")
+	}
+	if _, err := store.Prune(t.Context(), env.Pool, r, 0); err == nil {
+		t.Error("Prune accepted a zero batch")
+	}
+}
+
+// openStep begins a transaction that records a step of job id, as an open
+// run.Step does, and keeps it open until the test ends. The idempotency_keys
+// foreign key locks the job's row FOR KEY SHARE meanwhile.
+func openStep(t *testing.T, env *queuetest.Env, id int64) {
+	t.Helper()
+	tx, err := env.Pool.Begin(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = tx.Rollback(context.Background()) })
+	if _, err := tx.Exec(t.Context(), `INSERT INTO idempotency_keys (job_id, step) VALUES ($1, 'open')`, id); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// D-047: an open step of a job doesn't hide it from the reaper. Its expired
+// lease is requeued while the step's transaction still holds the key.
+func TestReapIgnoresAnOpenStep(t *testing.T) {
+	t.Parallel()
+	env := queuetest.New(t, queuetest.Config(t, withLease(100, 50)))
+	id := env.Enqueue(t, shopA, testkinds.Sleep, nil)
+	claimOne(t, env, "stuck-in-a-step")
+	openStep(t, env, id)
+	time.Sleep(200 * time.Millisecond) // the lease expires
+	r, err := store.Reap(t.Context(), env.Pool, 500)
+	if err != nil || r.Requeued != 1 {
+		t.Fatalf("Reap = %+v, %v; want the job requeued although a step of it is open", r, err)
+	}
+}
+
+// D-047: an open step of a queued job doesn't hide it from claims.
+func TestClaimIgnoresAnOpenStep(t *testing.T) {
+	t.Parallel()
+	env := queuetest.New(t, nil)
+	id := env.Enqueue(t, shopA, testkinds.Sleep, nil)
+	openStep(t, env, id)
+	jobs, err := store.Claim(t.Context(), env.Pool, []string{"w"})
+	if err != nil || len(jobs) != 1 || jobs[0].ID != id {
+		t.Fatalf("Claim = %+v, %v; want job %d although a step of it is open", jobs, err, id)
+	}
+}
+
+// Design §5.1, D-018: dedupe runs before the shop_state row lock, so a
+// duplicate is answered while another transaction holds that lock (as a busy
+// shop's enqueues do), and it never takes the lock itself.
+func TestDuplicateDoesNotWaitOnTheShopLock(t *testing.T) {
+	t.Parallel()
+	env := queuetest.New(t, nil)
+	first := enqueueKey(t, env, shopA, "webhook-9")
+	holder, err := env.Pool.Begin(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = holder.Rollback(context.Background()) }()
+	if _, err := holder.Exec(t.Context(), `SELECT 1 FROM shop_state WHERE shop_id = $1 FOR UPDATE`, shopA); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
+	defer cancel()
+	res, err := store.Enqueue(ctx, env.Pool,
+		store.NewJob{Shop: shopA, Kind: testkinds.Sleep, Payload: json.RawMessage(`{}`), DedupeKey: "webhook-9"})
+	if err != nil || !res.Duplicate || res.ID != first.ID {
+		t.Fatalf("duplicate while the shop row is locked = %+v, %v; want duplicate of %d without waiting", res, err, first.ID)
+	}
+}

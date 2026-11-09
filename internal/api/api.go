@@ -1,5 +1,5 @@
-// Package api is the api role's job endpoints (design §11.1): enqueue one job
-// and read one job. Batch enqueue, webhooks, the read API and the DLQ arrive in
+// Package api is the api role's job endpoints (design §11.1): enqueue one job,
+// with an optional dedupe key, and read one job. Batch enqueue, webhooks, the read API and the DLQ arrive in
 // later phases.
 package api
 
@@ -24,6 +24,8 @@ const MaxBodyBytes = 1 << 20
 const (
 	maxShopLen = 255
 	maxKindLen = 100
+	// MaxDedupeKeyLen is the longest dedupe key (D-045).
+	MaxDedupeKeyLen = 255
 )
 
 // Server serves the job endpoints.
@@ -77,15 +79,12 @@ func parseEnqueue(w http.ResponseWriter, r *http.Request) (store.NewJob, error) 
 	dec.DisallowUnknownFields()
 	var req enqueueRequest
 	if err := dec.Decode(&req); err != nil {
-		return store.NewJob{}, invalid("body must be one JSON object with fields shop, kind, payload and optional run_at: %v", err)
+		return store.NewJob{}, invalid("body must be one JSON object with fields shop, kind, payload and optional run_at and dedupe_key: %v", err)
 	}
 	if err := dec.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
 		return store.NewJob{}, invalid("body has data after the JSON object")
 	}
 
-	if req.DedupeKey != nil {
-		return store.NewJob{}, invalid("dedupe_key is not supported yet")
-	}
 	if err := checkName("shop", req.Shop, maxShopLen); err != nil {
 		return store.NewJob{}, err
 	}
@@ -96,6 +95,16 @@ func parseEnqueue(w http.ResponseWriter, r *http.Request) (store.NewJob, error) 
 		return store.NewJob{}, invalid("payload must be a JSON object")
 	}
 	job := store.NewJob{Shop: req.Shop, Kind: req.Kind, Payload: req.Payload}
+	if req.DedupeKey != nil {
+		// D-045: a non-empty string of at most 255 bytes with no control characters.
+		if *req.DedupeKey == "" {
+			return store.NewJob{}, invalid("dedupe_key must not be empty")
+		}
+		if err := checkName("dedupe_key", *req.DedupeKey, MaxDedupeKeyLen); err != nil {
+			return store.NewJob{}, err
+		}
+		job.DedupeKey = *req.DedupeKey
+	}
 	if req.RunAt != nil {
 		t, err := time.Parse(time.RFC3339Nano, *req.RunAt)
 		if err != nil {
@@ -118,15 +127,16 @@ func checkName(field, v string, maxLen int) error {
 	return nil
 }
 
-// enqueue answers POST /v1/jobs: 201 {id}, 404 for an unknown shop, 422 for an
-// invalid request or unknown kind, 413 for an oversized body (AC-1.1 to AC-1.3).
+// enqueue answers POST /v1/jobs: 201 {id} for a new job, 200 {id, duplicate}
+// when the shop already has the dedupe key, 404 for an unknown shop, 422 for an
+// invalid request or unknown kind, 413 for an oversized body (AC-1.1 to AC-1.4).
 func (s *Server) enqueue(w http.ResponseWriter, r *http.Request) {
 	job, err := parseEnqueue(w, r)
 	if err != nil {
 		s.fail(w, err)
 		return
 	}
-	id, err := store.Enqueue(r.Context(), s.db, job)
+	res, err := store.Enqueue(r.Context(), s.db, job)
 	switch {
 	case errors.Is(err, store.ErrUnknownShop):
 		s.fail(w, &requestError{status: http.StatusNotFound, msg: "unknown shop"})
@@ -142,8 +152,19 @@ func (s *Server) enqueue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// The job is committed before 201 is sent, so it survives any crash (AC-1.1).
-	w.Header().Set("Location", "/v1/jobs/"+strconv.FormatInt(id, 10))
-	writeJSON(w, http.StatusCreated, map[string]int64{"id": id})
+	w.Header().Set("Location", "/v1/jobs/"+strconv.FormatInt(res.ID, 10))
+	if res.Duplicate {
+		// AC-1.4: the shop already has this dedupe key; nothing was created.
+		writeJSON(w, http.StatusOK, enqueueResponse{ID: res.ID, Duplicate: true})
+		return
+	}
+	writeJSON(w, http.StatusCreated, enqueueResponse{ID: res.ID})
+}
+
+// enqueueResponse is the body of a 201 or 200 enqueue answer.
+type enqueueResponse struct {
+	ID        int64 `json:"id"`
+	Duplicate bool  `json:"duplicate,omitempty"`
 }
 
 // jobView is what GET /v1/jobs/{id} shows: state, counters and timestamps.
