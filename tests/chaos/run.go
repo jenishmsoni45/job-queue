@@ -30,6 +30,8 @@ type Env struct {
 	HTTP   *http.Client
 	Shops  []string
 	Logf   func(format string, args ...any)
+
+	toxiAddrs []string // where connections through Toxiproxy come from; set by Setup
 }
 
 // enqueueConcurrency is how many enqueue requests a run keeps in flight.
@@ -47,6 +49,11 @@ func (e *Env) Setup(ctx context.Context) error {
 	if _, err := e.DB.Exec(ctx, queuetest.LeaseLogSQL); err != nil {
 		return fmt.Errorf("chaos: install the lease log: %w", err)
 	}
+	addrs, err := toxiproxyAddrs(ctx)
+	if err != nil {
+		return err
+	}
+	e.toxiAddrs = addrs
 	names, err := e.Toxi.Proxies(ctx)
 	if err != nil {
 		return err
@@ -146,7 +153,7 @@ type RunResult struct {
 	Error      string        `json:"error,omitempty"` // a harness error that cut the run short
 	Jobs       JobCounts     `json:"jobs"`
 	Faults     []FaultResult `json:"faults"`
-	Samples    Samples       `json:"backlog_samples"`
+	Samples    Samples       `json:"samples"`
 	Checks     []Check       `json:"checks"`
 }
 
@@ -161,11 +168,17 @@ type JobCounts struct {
 	NotTerminal    int `json:"not_terminal"`
 }
 
-// Samples counts the backlog counter samples taken during the run.
+// Samples records what was sampled every second during the run: the backlog
+// counter against a real count, and where the workers' and the dispatcher's
+// Postgres connections come from.
 type Samples struct {
 	Taken      int `json:"taken"`
 	Skipped    int `json:"skipped"` // the database didn't answer, for example during a restart
-	Mismatched int `json:"mismatched"`
+	Mismatched int `json:"backlog_mismatched"`
+	// Connections counts the worker and dispatcher connections seen across all
+	// samples, and Bypasses lists any that didn't come through Toxiproxy.
+	Connections int      `json:"connections_seen"`
+	Bypasses    []string `json:"bypasses,omitempty"`
 }
 
 // Run runs one seeded chaos run (design §18) and checks it. It returns an
@@ -188,7 +201,7 @@ func (e *Env) Run(ctx context.Context, plan Plan) (RunResult, error) {
 
 	sampleCtx, stopSampler := context.WithCancel(runCtx)
 	samplerDone := make(chan Samples, 1)
-	go func() { samplerDone <- e.sampleBacklog(sampleCtx) }()
+	go func() { samplerDone <- e.sample(sampleCtx) }()
 
 	var wg sync.WaitGroup
 	res.Faults = make([]FaultResult, len(plan.Faults))
@@ -414,9 +427,11 @@ const backlogMismatchSQL = `
 	       (SELECT count(*) FROM jobs j WHERE j.shop_id = s.shop_id AND j.state IN ('queued', 'running'))
 	  FROM shop_state s`
 
-// sampleBacklog checks the backlog counter against a real count every second
-// until ctx ends.
-func (e *Env) sampleBacklog(ctx context.Context) Samples {
+// sample checks, every second until ctx ends, the backlog counter against a
+// real count, and that every worker and dispatcher connection comes through
+// Toxiproxy. Sampling the connections through the whole run, not only at its
+// end, matters: right after a Postgres restart idle processes may hold none.
+func (e *Env) sample(ctx context.Context) Samples {
 	var s Samples
 	for {
 		select {
@@ -425,17 +440,50 @@ func (e *Env) sampleBacklog(ctx context.Context) Samples {
 		case <-time.After(time.Second):
 		}
 		mismatches, err := e.backlogMismatches(ctx)
-		switch {
-		case err != nil:
+		if err != nil {
 			s.Skipped++
-		case len(mismatches) > 0:
-			s.Taken++
+			continue
+		}
+		seen, bypasses, err := e.routing(ctx)
+		if err != nil {
+			s.Skipped++
+			continue
+		}
+		s.Taken++
+		if len(mismatches) > 0 {
 			s.Mismatched++
 			e.Logf("backlog counter mismatch: %v", mismatches)
-		default:
-			s.Taken++
+		}
+		s.Connections += seen
+		for _, b := range bypasses {
+			if len(s.Bypasses) < maxExamples && !slices.Contains(s.Bypasses, b) {
+				s.Bypasses = append(s.Bypasses, b)
+			}
 		}
 	}
+}
+
+// routing returns how many worker and dispatcher connections are open, and
+// the ones that don't come from Toxiproxy.
+func (e *Env) routing(ctx context.Context) (seen int, bypasses []string, err error) {
+	rows, err := e.DB.Query(ctx, `
+		SELECT application_name, coalesce(host(client_addr), 'local') FROM pg_stat_activity
+		 WHERE application_name IN (`+queuedApps+`)`)
+	if err != nil {
+		return 0, nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var app, addr string
+		if err := rows.Scan(&app, &addr); err != nil {
+			return 0, nil, err
+		}
+		seen++
+		if !slices.Contains(e.toxiAddrs, addr) {
+			bypasses = append(bypasses, app+" from "+addr)
+		}
+	}
+	return seen, bypasses, rows.Err()
 }
 
 func (e *Env) backlogMismatches(ctx context.Context) ([]string, error) {

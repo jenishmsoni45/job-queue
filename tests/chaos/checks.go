@@ -52,7 +52,7 @@ func (e *Env) check(ctx context.Context, plan Plan, ids []int64, counts JobCount
 	add(CheckBacklog, bl, err)
 	ef, err := e.checkEffects(ctx)
 	add(CheckEffects, ef, err)
-	rt, err := e.checkRouting(ctx)
+	rt, err := e.checkRouting(ctx, samples)
 	add(CheckRouting, rt, err)
 	return checks, counts
 }
@@ -234,38 +234,23 @@ func (e *Env) checkEffects(ctx context.Context) (string, error) {
 	return fmt.Sprintf("%d effects", total), errors.Join(errs...)
 }
 
-// checkRouting: every connection the workers and the dispatcher hold comes
-// from Toxiproxy, so faults on the proxies really reach them (design §18).
-func (e *Env) checkRouting(ctx context.Context) (string, error) {
-	addrs, err := toxiproxyAddrs(ctx)
-	if err != nil {
-		return "", err
-	}
-	rows, err := e.DB.Query(ctx, `
-		SELECT application_name, coalesce(host(client_addr), 'local') FROM pg_stat_activity
-		 WHERE application_name IN (`+queuedApps+`)`)
-	if err != nil {
-		return "", err
-	}
-	type conn struct{ app, addr string }
-	conns, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (conn, error) {
-		var c conn
-		err := row.Scan(&c.app, &c.addr)
-		return c, err
-	})
-	if err != nil {
-		return "", err
+// checkRouting: every worker and dispatcher connection seen during the run,
+// sampled every second, and at its end, came through Toxiproxy, and at least
+// one was seen, so faults on the proxies really reached them (design §18).
+func (e *Env) checkRouting(ctx context.Context, samples Samples) (string, error) {
+	seen, bypasses := samples.Connections, slices.Clone(samples.Bypasses)
+	if n, b, err := e.routing(ctx); err == nil {
+		seen += n
+		bypasses = append(bypasses, b...)
 	}
 	var errs []error
-	if len(conns) == 0 {
-		errs = append(errs, errors.New("no worker or dispatcher connection is open"))
+	if seen == 0 {
+		errs = append(errs, errors.New("no worker or dispatcher connection was seen during the run"))
 	}
-	for _, c := range conns {
-		if !slices.Contains(addrs, c.addr) {
-			errs = append(errs, fmt.Errorf("%s connects from %s, not from toxiproxy (%v)", c.app, c.addr, addrs))
-		}
+	for _, b := range bypasses {
+		errs = append(errs, fmt.Errorf("%s, not through toxiproxy (%v)", b, e.toxiAddrs))
 	}
-	return fmt.Sprintf("%d connections, all from toxiproxy", len(conns)), errors.Join(errs...)
+	return fmt.Sprintf("%d connections seen across the run's samples, all through toxiproxy", seen), errors.Join(errs...)
 }
 
 // accepted returns the non-zero IDs.
