@@ -1,6 +1,8 @@
 // Package api is the api role's job endpoints (design §11.1): enqueue one job,
-// with an optional dedupe key, and read one job. Batch enqueue, webhooks, the
-// read API and the DLQ arrive in later phases.
+// or a batch of jobs for one shop, with optional dedupe keys, and read one job.
+// An enqueue that would pass the shop's backlog limit is answered with 429 and a
+// Retry-After header, and creates nothing (D-007). Webhooks, the read API and the
+// DLQ arrive in later phases.
 package api
 
 import (
@@ -15,11 +17,15 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jenishmsoni45/job-queue/internal/admission"
 	"github.com/jenishmsoni45/job-queue/internal/store"
 )
 
 // MaxBodyBytes is the max request body (design §2: 1 MiB).
 const MaxBodyBytes = 1 << 20
+
+// MaxBatchSize is the most jobs one batch holds (design §2, D-030).
+const MaxBatchSize = 1000
 
 const (
 	maxShopLen = 255
@@ -40,21 +46,34 @@ func New(db store.DB, log *slog.Logger) *Server { return &Server{db: db, log: lo
 // Register adds the endpoints to mux.
 func (s *Server) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/jobs", s.enqueue)
+	mux.HandleFunc("POST /v1/jobs/batch", s.enqueueBatch)
 	mux.HandleFunc("GET /v1/jobs/{id}", s.getJob)
 }
 
-type enqueueRequest struct {
-	Shop      string          `json:"shop"`
+// jobFields are the fields of one job in a request.
+type jobFields struct {
 	Kind      string          `json:"kind"`
 	Payload   json.RawMessage `json:"payload"`
 	RunAt     *string         `json:"run_at"`
 	DedupeKey *string         `json:"dedupe_key"`
 }
 
+type enqueueRequest struct {
+	Shop string `json:"shop"`
+	jobFields
+}
+
+type batchRequest struct {
+	Shop string      `json:"shop"`
+	Jobs []jobFields `json:"jobs"`
+}
+
 // requestError is a client error with its status.
 type requestError struct {
 	status int
 	msg    string
+	// retryAfter, if positive, is sent as the Retry-After header (429).
+	retryAfter time.Duration
 }
 
 func (e *requestError) Error() string { return e.msg }
@@ -63,50 +82,103 @@ func invalid(format string, args ...any) error {
 	return &requestError{status: http.StatusUnprocessableEntity, msg: fmt.Sprintf(format, args...)}
 }
 
-// parseEnqueue reads and validates the whole request before anything is
-// written (D-039), so every rejected request creates nothing (AC-1.3).
-func parseEnqueue(w http.ResponseWriter, r *http.Request) (store.NewJob, error) {
+// readJSON reads the body, up to MaxBodyBytes, and decodes it strictly into v:
+// one JSON object, with no field v doesn't have. what describes the expected
+// body for the error message.
+func readJSON(w http.ResponseWriter, r *http.Request, v any, what string) error {
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, MaxBodyBytes))
 	if err != nil {
 		var tooBig *http.MaxBytesError
 		if errors.As(err, &tooBig) {
-			return store.NewJob{}, &requestError{status: http.StatusRequestEntityTooLarge,
+			return &requestError{status: http.StatusRequestEntityTooLarge,
 				msg: fmt.Sprintf("body is larger than %d bytes", MaxBodyBytes)}
 		}
-		return store.NewJob{}, &requestError{status: http.StatusBadRequest, msg: "could not read the body"}
+		return &requestError{status: http.StatusBadRequest, msg: "could not read the body"}
 	}
 	dec := json.NewDecoder(bytes.NewReader(body))
 	dec.DisallowUnknownFields()
-	var req enqueueRequest
-	if err := dec.Decode(&req); err != nil {
-		return store.NewJob{}, invalid("body must be one JSON object with fields shop, kind, payload and optional run_at and dedupe_key: %v", err)
+	if err := dec.Decode(v); err != nil {
+		return invalid("body must be one JSON object with %s: %v", what, err)
 	}
 	if err := dec.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
-		return store.NewJob{}, invalid("body has data after the JSON object")
+		return invalid("body has data after the JSON object")
 	}
+	return nil
+}
 
+// parseEnqueue reads and validates the whole request before anything is
+// written (D-039), so every rejected request creates nothing (AC-1.3).
+func parseEnqueue(w http.ResponseWriter, r *http.Request) (store.NewJob, error) {
+	var req enqueueRequest
+	if err := readJSON(w, r, &req, "fields shop, kind, payload and optional run_at and dedupe_key"); err != nil {
+		return store.NewJob{}, err
+	}
 	if err := checkName("shop", req.Shop, maxShopLen); err != nil {
 		return store.NewJob{}, err
 	}
-	if err := checkName("kind", req.Kind, maxKindLen); err != nil {
+	return buildJob(req.Shop, req.jobFields)
+}
+
+// parseBatch reads and validates a whole batch before anything is written (D-030,
+// D-039). Any invalid job, a dedupe key used twice, or a batch with no jobs or
+// more than MaxBatchSize is 422 and creates nothing (AC-2.4).
+func parseBatch(w http.ResponseWriter, r *http.Request) ([]store.NewJob, error) {
+	var req batchRequest
+	if err := readJSON(w, r, &req, "fields shop and jobs, each job with kind, payload and optional run_at and dedupe_key"); err != nil {
+		return nil, err
+	}
+	if err := checkName("shop", req.Shop, maxShopLen); err != nil {
+		return nil, err
+	}
+	switch {
+	case len(req.Jobs) == 0:
+		return nil, invalid("jobs must hold at least one job")
+	case len(req.Jobs) > MaxBatchSize:
+		return nil, invalid("jobs holds %d jobs, more than the most a batch may hold, %d", len(req.Jobs), MaxBatchSize)
+	}
+	jobs := make([]store.NewJob, len(req.Jobs))
+	firstUse := map[string]int{}
+	for i, f := range req.Jobs {
+		job, err := buildJob(req.Shop, f)
+		if err != nil {
+			var re *requestError
+			if errors.As(err, &re) {
+				return nil, &requestError{status: re.status, msg: fmt.Sprintf("jobs[%d]: %s", i, re.msg)}
+			}
+			return nil, err
+		}
+		if job.DedupeKey != "" {
+			if first, seen := firstUse[job.DedupeKey]; seen {
+				return nil, invalid("jobs[%d]: dedupe_key is already used by jobs[%d]", i, first)
+			}
+			firstUse[job.DedupeKey] = i
+		}
+		jobs[i] = job
+	}
+	return jobs, nil
+}
+
+// buildJob checks one job's fields and returns the job for shop.
+func buildJob(shop string, f jobFields) (store.NewJob, error) {
+	if err := checkName("kind", f.Kind, maxKindLen); err != nil {
 		return store.NewJob{}, err
 	}
-	if p := bytes.TrimSpace(req.Payload); len(p) == 0 || p[0] != '{' {
+	if p := bytes.TrimSpace(f.Payload); len(p) == 0 || p[0] != '{' {
 		return store.NewJob{}, invalid("payload must be a JSON object")
 	}
-	job := store.NewJob{Shop: req.Shop, Kind: req.Kind, Payload: req.Payload}
-	if req.DedupeKey != nil {
+	job := store.NewJob{Shop: shop, Kind: f.Kind, Payload: f.Payload}
+	if f.DedupeKey != nil {
 		// D-045: a non-empty string of at most 255 bytes with no control characters.
-		if *req.DedupeKey == "" {
+		if *f.DedupeKey == "" {
 			return store.NewJob{}, invalid("dedupe_key must not be empty")
 		}
-		if err := checkName("dedupe_key", *req.DedupeKey, MaxDedupeKeyLen); err != nil {
+		if err := checkName("dedupe_key", *f.DedupeKey, MaxDedupeKeyLen); err != nil {
 			return store.NewJob{}, err
 		}
-		job.DedupeKey = *req.DedupeKey
+		job.DedupeKey = *f.DedupeKey
 	}
-	if req.RunAt != nil {
-		t, err := time.Parse(time.RFC3339Nano, *req.RunAt)
+	if f.RunAt != nil {
+		t, err := time.Parse(time.RFC3339Nano, *f.RunAt)
 		if err != nil {
 			return store.NewJob{}, invalid("run_at must be an RFC 3339 time such as 2026-12-01T10:00:00Z")
 		}
@@ -129,7 +201,8 @@ func checkName(field, v string, maxLen int) error {
 
 // enqueue answers POST /v1/jobs: 201 {id} for a new job, 200 {id, duplicate}
 // when the shop already has the dedupe key, 404 for an unknown shop, 422 for an
-// invalid request or unknown kind, 413 for an oversized body (AC-1.1 to AC-1.4).
+// invalid request or unknown kind, 413 for an oversized body (AC-1.1 to AC-1.4),
+// and 429 with Retry-After when the shop is at its backlog limit (AC-11.1).
 func (s *Server) enqueue(w http.ResponseWriter, r *http.Request) {
 	job, err := parseEnqueue(w, r)
 	if err != nil {
@@ -137,18 +210,8 @@ func (s *Server) enqueue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	res, err := store.Enqueue(r.Context(), s.db, job)
-	switch {
-	case errors.Is(err, store.ErrUnknownShop):
-		s.fail(w, &requestError{status: http.StatusNotFound, msg: "unknown shop"})
-		return
-	case errors.Is(err, store.ErrUnknownKind):
-		s.fail(w, invalid("unknown job kind"))
-		return
-	case errors.Is(err, store.ErrInvalidPayload):
-		s.fail(w, invalid("payload is not storable JSON: %v", err))
-		return
-	case err != nil:
-		s.fail(w, err)
+	if err != nil {
+		s.fail(w, enqueueError(err))
 		return
 	}
 	// The job is committed before 201 is sent, so it survives any crash (AC-1.1).
@@ -159,6 +222,59 @@ func (s *Server) enqueue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, enqueueResponse{ID: res.ID})
+}
+
+// enqueueError turns what an enqueue returned into an error fail understands:
+// a client error with its status, or the error itself, which is a 500.
+func enqueueError(err error) error {
+	var rej *admission.Rejected
+	switch {
+	case errors.As(err, &rej):
+		return &requestError{status: http.StatusTooManyRequests, retryAfter: rej.RetryAfter,
+			msg: "the shop is at its backlog limit; try again later"}
+	case errors.Is(err, store.ErrUnknownShop):
+		return &requestError{status: http.StatusNotFound, msg: "unknown shop"}
+	case errors.Is(err, store.ErrUnknownKind):
+		return invalid("unknown job kind")
+	case errors.Is(err, store.ErrInvalidPayload):
+		return invalid("payload is not storable JSON: %v", err)
+	case errors.Is(err, store.ErrDuplicateKeyInBatch):
+		return invalid("a dedupe_key is used twice in the batch")
+	}
+	return err
+}
+
+// enqueueBatch answers POST /v1/jobs/batch (D-030, D-048): 201 {ids, duplicates}
+// when it created at least one job, 200 when every job was a duplicate, 404 for
+// an unknown shop, 413 or 422 for an invalid batch, and 429 with Retry-After when
+// the new jobs don't fit under the shop's backlog limit. A batch is all or
+// nothing (AC-2.1).
+func (s *Server) enqueueBatch(w http.ResponseWriter, r *http.Request) {
+	jobs, err := parseBatch(w, r)
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	res, err := store.EnqueueBatch(r.Context(), s.db, jobs)
+	if err != nil {
+		s.fail(w, enqueueError(err))
+		return
+	}
+	status := http.StatusCreated
+	if res.Created == 0 {
+		status = http.StatusOK // every job was a duplicate
+	}
+	if res.Duplicates == nil {
+		res.Duplicates = []int64{}
+	}
+	writeJSON(w, status, batchResponse{IDs: res.IDs, Duplicates: res.Duplicates})
+}
+
+// batchResponse is the body of a batch answer: one ID per request job, in
+// order, and the IDs among them that already existed.
+type batchResponse struct {
+	IDs        []int64 `json:"ids"`
+	Duplicates []int64 `json:"duplicates"`
 }
 
 // enqueueResponse is the body of a 201 or 200 enqueue answer.
@@ -216,6 +332,9 @@ func (s *Server) getJob(w http.ResponseWriter, r *http.Request) {
 func (s *Server) fail(w http.ResponseWriter, err error) {
 	var re *requestError
 	if errors.As(err, &re) {
+		if re.retryAfter > 0 {
+			w.Header().Set("Retry-After", strconv.Itoa(admission.RetryAfterSeconds(re.retryAfter)))
+		}
 		writeJSON(w, re.status, map[string]string{"error": re.msg})
 		return
 	}
