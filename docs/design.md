@@ -175,10 +175,12 @@ COMMIT, return 201 {id}
 
 ### 5.2 Batch (D-030)
 
-- A batch holds up to the max batch size for one shop. A key that appears twice in the same batch makes the batch invalid (422).
+- A batch holds up to the max batch size for one shop. A key that appears twice in the same batch makes the batch invalid (422), and so does an empty batch.
+- The reply has `ids`, one per request job in request order, and `duplicates`, the IDs among them that already existed (D-048).
 - The API reads the existing keys first. Those jobs are reported with their existing IDs.
 - It then takes the `shop_state` lock once. If `backlog + new_count > backlog_limit`, the whole batch gets 429 and nothing is created.
 - Otherwise every new job and key is inserted, `backlog += new_count`, and one notify is sent.
+- A rejected batch adds `new_count` to `shed_total`, not its whole size (D-049).
 
 ## 6. Scheduling and claims
 
@@ -369,7 +371,7 @@ func Key(jobID int64, step string) string // "job-<id>-<step>"
 | Method and path | Purpose | Responses |
 |---|---|---|
 | `POST /v1/jobs` | enqueue `{shop, kind, payload, run_at?, dedupe_key?}` | 201 `{id}` · 200 `{id, duplicate}` · 404 unknown shop · 413 · 422 · 429 + `Retry-After` |
-| `POST /v1/jobs/batch` | enqueue `{shop, jobs: [...]}`, all or nothing (D-030) | 201 `{ids, duplicates}` · 404 · 413 · 422 · 429 + `Retry-After` |
+| `POST /v1/jobs/batch` | enqueue `{shop, jobs: [...]}`, all or nothing (D-030) | 201 `{ids, duplicates}` (200 if every job was a duplicate) · 404 · 413 · 422 · 429 + `Retry-After` |
 | `GET /v1/jobs/{id}` | state, counters and timestamps of one job | 200 · 404 |
 | `POST /webhooks/shopify` | the Shopify webhook receiver | 200 created or duplicate · 401 bad or missing HMAC · 404 unknown shop · 413 · 422 unknown topic · 429 + `Retry-After` |
 | `GET /v1/shops` | per-shop stats for the console (AC-12.1) | 200 |
