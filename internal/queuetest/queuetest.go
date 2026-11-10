@@ -72,6 +72,33 @@ func SetKind(cfg *config.File, kind string, set func(*config.Kind)) {
 	panic("queuetest: no kind " + kind)
 }
 
+// WithShop returns an edit for Config that changes one shop's settings.
+func WithShop(id string, set func(*config.Shop)) func(*config.File) {
+	return func(c *config.File) {
+		for i := range c.Shops {
+			if c.Shops[i].ID == id {
+				set(&c.Shops[i])
+				return
+			}
+		}
+		panic("queuetest: no shop " + id)
+	}
+}
+
+// WithKind returns an edit for Config that changes one kind's settings.
+func WithKind(kind string, set func(*config.Kind)) func(*config.File) {
+	return func(c *config.File) { SetKind(c, kind, set) }
+}
+
+// Edits combines edits for Config, applied in order.
+func Edits(list ...func(*config.File)) func(*config.File) {
+	return func(c *config.File) {
+		for _, e := range list {
+			e(c)
+		}
+	}
+}
+
 // Env is a migrated, seeded test database.
 type Env struct {
 	DB     *pgtest.DB

@@ -13,7 +13,7 @@ import (
 
 // withCap sets a shop's concurrency cap.
 func withCap(shop string, maxConcurrency int) func(*config.File) {
-	return shopEdit(shop, func(s *config.Shop) { s.MaxConcurrency = maxConcurrency })
+	return queuetest.WithShop(shop, func(s *config.Shop) { s.MaxConcurrency = maxConcurrency })
 }
 
 // withCost sets the DRR cost of a kind.

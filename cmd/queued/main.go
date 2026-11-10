@@ -1,6 +1,6 @@
 // Command queued is the queue server. Each process runs one role (D-014):
 //
-//	queued api          enqueue and read jobs (POST /v1/jobs, GET /v1/jobs/{id})
+//	queued api          enqueue and read jobs (POST /v1/jobs, POST /v1/jobs/batch, GET /v1/jobs/{id})
 //	queued dispatcher   leader lock, claims for long-polling workers, reaper, pruner
 //	queued worker       handler pool, batched heartbeats, fenced results
 //
@@ -17,6 +17,7 @@
 //	QUEUED_DISPATCHER_URL     worker: the dispatcher's base URL (http://dispatcher:8080)
 //	QUEUED_WORKER_SLOTS       worker: handler goroutines (8)
 //	QUEUED_TEST_HANDLERS      worker: "1" registers the test kinds (internal/testkinds)
+//	QUEUED_SCHEDULER          dispatcher: "drr" (weighted deficit round robin) or "fifo" (drr)
 //	QUEUED_REFRESH_MS         dispatcher: claim retry when nothing was notified (250)
 //	QUEUED_CLAIM_TIMEOUT_MS   dispatcher and worker: claim long-poll timeout (25000)
 //	QUEUED_REAPER_SCAN_MS     dispatcher: reaper scan (5000)
@@ -53,6 +54,7 @@ import (
 	"github.com/jenishmsoni45/job-queue/internal/httpserver"
 	"github.com/jenishmsoni45/job-queue/internal/migrate"
 	"github.com/jenishmsoni45/job-queue/internal/queue"
+	"github.com/jenishmsoni45/job-queue/internal/scheduler"
 	"github.com/jenishmsoni45/job-queue/internal/store"
 	"github.com/jenishmsoni45/job-queue/internal/testkinds"
 	"github.com/jenishmsoni45/job-queue/migrations"
@@ -129,6 +131,7 @@ type settings struct {
 	dispatcherURL string
 	slots         int
 	testHandlers  bool
+	scheduler     scheduler.Mode
 	refresh       time.Duration
 	longPoll      time.Duration
 	reaperScan    time.Duration
@@ -151,6 +154,16 @@ func loadSettings(getenv func(string) string) (settings, error) {
 		s.dispatcherURL = "http://dispatcher:8080"
 	}
 	var errs []error
+	mode := scheduler.ModeDRR
+	if v := getenv("QUEUED_SCHEDULER"); v != "" {
+		m, err := scheduler.ParseMode(v)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("QUEUED_SCHEDULER: %w", err))
+		} else {
+			mode = m
+		}
+	}
+	s.scheduler = mode
 	num := func(name string, def int) int {
 		v := getenv(name)
 		if v == "" {
@@ -201,7 +214,7 @@ func runRole(ctx context.Context, role, addr string, getenv func(string) string,
 	case "api":
 		return runAPI(ctx, addr, cfg, connCfg, log)
 	case "dispatcher":
-		return runDispatcher(ctx, addr, s, connCfg, log)
+		return runDispatcher(ctx, addr, s, cfg, connCfg, log)
 	default:
 		return runWorker(ctx, addr, s, cfg, connCfg, log)
 	}
@@ -259,7 +272,7 @@ func runAPI(ctx context.Context, addr string, cfg *config.File, connCfg *pgx.Con
 }
 
 // runDispatcher campaigns for the leader lock and serves the claim long-poll.
-func runDispatcher(ctx context.Context, addr string, s settings, connCfg *pgx.ConnConfig, log *slog.Logger) error {
+func runDispatcher(ctx context.Context, addr string, s settings, cfg *config.File, connCfg *pgx.ConnConfig, log *slog.Logger) error {
 	pool, err := openPool(ctx, connCfg, "queued-dispatcher", 0)
 	if err != nil {
 		return err
@@ -270,6 +283,8 @@ func runDispatcher(ctx context.Context, addr string, s settings, connCfg *pgx.Co
 	d, err := dispatcher.New(dispatcher.Config{
 		DB:             pool,
 		Connect:        func(ctx context.Context) (*pgx.Conn, error) { return pgx.ConnectConfig(ctx, leaderCfg.Copy()) },
+		Scheduler:      s.scheduler,
+		Quantum:        int64(cfg.MaxCost()),
 		Refresh:        s.refresh,
 		LongPoll:       s.longPoll,
 		ReaperInterval: s.reaperScan,

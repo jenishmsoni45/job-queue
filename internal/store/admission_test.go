@@ -14,31 +14,9 @@ import (
 	"github.com/jenishmsoni45/job-queue/internal/testkinds"
 )
 
-// shopEdit changes one shop's settings in the test config.
-func shopEdit(shop string, set func(*config.Shop)) func(*config.File) {
-	return func(c *config.File) {
-		for i := range c.Shops {
-			if c.Shops[i].ID == shop {
-				set(&c.Shops[i])
-				return
-			}
-		}
-		panic("no shop " + shop)
-	}
-}
-
-// edits applies each edit in turn.
-func edits(list ...func(*config.File)) func(*config.File) {
-	return func(c *config.File) {
-		for _, e := range list {
-			e(c)
-		}
-	}
-}
-
 // withBacklogLimit sets a shop's backlog limit and its Retry-After.
 func withBacklogLimit(shop string, limit, retryAfterMS int) func(*config.File) {
-	return shopEdit(shop, func(s *config.Shop) { s.BacklogLimit, s.BacklogRetryAfterMS = limit, retryAfterMS })
+	return queuetest.WithShop(shop, func(s *config.Shop) { s.BacklogLimit, s.BacklogRetryAfterMS = limit, retryAfterMS })
 }
 
 func shedTotal(t *testing.T, env *queuetest.Env, shop string) int {

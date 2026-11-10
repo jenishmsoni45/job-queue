@@ -245,3 +245,43 @@ func claimRows(ctx context.Context, tx pgx.Tx, ids []int64, owners []string) ([]
 	}
 	return claimed, nil
 }
+
+// ShopSnapshot is what the dispatcher's refresh learns about one shop (design §6.1).
+type ShopSnapshot struct {
+	ID             string
+	Weight         int
+	MaxConcurrency int
+	RatePerSec     float64
+	RateBurst      int
+	// Running is the shop's running jobs.
+	Running int
+	// Runnable means the shop has a queued job whose run_at has passed.
+	Runnable bool
+	// Throttled means the shop's throttled_until is in the future.
+	Throttled bool
+}
+
+// SnapshotShops reads every shop's settings and state in one statement, so
+// "now" is one instant for all of them. Both time comparisons use the database
+// clock, statement_timestamp(), as the claim transaction does. The result only
+// hints at what a claim can do: the claim transaction is the authority (design §6.1).
+func SnapshotShops(ctx context.Context, db DB) ([]ShopSnapshot, error) {
+	rows, err := db.Query(ctx, `
+		SELECT s.id, s.weight, s.max_concurrency, s.rate_per_sec, s.rate_burst,
+		       (SELECT count(*) FROM jobs j WHERE j.shop_id = s.id AND j.state = 'running'),
+		       EXISTS (SELECT 1 FROM jobs j WHERE j.shop_id = s.id AND j.state = 'queued' AND j.run_at <= statement_timestamp()),
+		       coalesce(st.throttled_until > statement_timestamp(), false)
+		  FROM shops s JOIN shop_state st ON st.shop_id = s.id
+		 ORDER BY s.id`)
+	if err != nil {
+		return nil, fmt.Errorf("store: snapshot shops: %w", err)
+	}
+	snaps, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (ShopSnapshot, error) {
+		var s ShopSnapshot
+		return s, row.Scan(&s.ID, &s.Weight, &s.MaxConcurrency, &s.RatePerSec, &s.RateBurst, &s.Running, &s.Runnable, &s.Throttled)
+	})
+	if err != nil {
+		return nil, fmt.Errorf("store: snapshot shops: %w", err)
+	}
+	return snaps, nil
+}

@@ -139,3 +139,15 @@ func duplicateFirst(s, array string) string {
 	elem := strings.TrimSpace(s[start:end])
 	return s[:end] + ", " + elem + s[end:]
 }
+
+// The DRR base quantum is the largest job cost in the file (design §2).
+func TestMaxCost(t *testing.T) {
+	t.Parallel()
+	cfg := &config.File{Kinds: []config.Kind{{Kind: "a", Cost: 2}, {Kind: "b", Cost: 7}, {Kind: "c", Cost: 3}}}
+	if got := cfg.MaxCost(); got != 7 {
+		t.Fatalf("MaxCost = %d, want 7", got)
+	}
+	if got := (&config.File{}).MaxCost(); got != 1 {
+		t.Fatalf("MaxCost with no kinds = %d, want 1", got)
+	}
+}
