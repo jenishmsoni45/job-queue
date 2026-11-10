@@ -1,0 +1,13 @@
+{
+  "shops": [
+    {"id": "shop-1.chaos.test", "weight": 1, "max_concurrency": 100, "rate_per_sec": 10000, "rate_burst": 10000, "backlog_limit": 100000, "backlog_retry_after_ms": 1000},
+    {"id": "shop-2.chaos.test", "weight": 1, "max_concurrency": 100, "rate_per_sec": 10000, "rate_burst": 10000, "backlog_limit": 100000, "backlog_retry_after_ms": 1000},
+    {"id": "shop-3.chaos.test", "weight": 1, "max_concurrency": 100, "rate_per_sec": 10000, "rate_burst": 10000, "backlog_limit": 100000, "backlog_retry_after_ms": 1000},
+    {"id": "shop-4.chaos.test", "weight": 1, "max_concurrency": 100, "rate_per_sec": 10000, "rate_burst": 10000, "backlog_limit": 100000, "backlog_retry_after_ms": 1000},
+    {"id": "shop-5.chaos.test", "weight": 1, "max_concurrency": 100, "rate_per_sec": 10000, "rate_burst": 10000, "backlog_limit": 100000, "backlog_retry_after_ms": 1000}
+  ],
+  "kinds": [
+    {"kind": "test.effect", "cost": 1, "lease_ms": 2000, "heartbeat_ms": 500, "timeout_ms": 10000, "max_attempts": 10, "max_throttles": 50, "handler_sleep_ms": 0},
+    {"kind": "test.sleep", "cost": 1, "lease_ms": 30000, "heartbeat_ms": 10000, "timeout_ms": 300000, "max_attempts": 10, "max_throttles": 50, "handler_sleep_ms": 0}
+  ]
+}

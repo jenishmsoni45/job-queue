@@ -1,0 +1,103 @@
+{
+  "seed": 204286007,
+  "started": "2026-11-09T05:17:35.202227131Z",
+  "duration_ms": 27575,
+  "passed": true,
+  "jobs": {
+    "planned": 2000,
+    "accepted": 2000,
+    "enqueue_retries": 0,
+    "duplicates": 0,
+    "completed": 2000,
+    "dead": 0,
+    "not_terminal": 0
+  },
+  "faults": [
+    {
+      "kind": "reset_peer",
+      "target": "pg-worker-2",
+      "at_ms": 6793,
+      "duration_ms": 1642,
+      "stream": "upstream",
+      "attributes": {
+        "timeout": 347
+      },
+      "applied_ms": 6793,
+      "reverted_ms": 8770
+    },
+    {
+      "kind": "timeout",
+      "target": "pg-dispatcher",
+      "at_ms": 14547,
+      "duration_ms": 1091,
+      "stream": "upstream",
+      "attributes": {
+        "timeout": 739
+      },
+      "applied_ms": 14547,
+      "reverted_ms": 15643
+    },
+    {
+      "kind": "latency",
+      "target": "pg-worker-2",
+      "at_ms": 15365,
+      "duration_ms": 3906,
+      "stream": "upstream",
+      "attributes": {
+        "jitter": 10,
+        "latency": 1393
+      },
+      "applied_ms": 15365,
+      "reverted_ms": 19275
+    },
+    {
+      "kind": "reset_peer",
+      "target": "pg-worker-2",
+      "at_ms": 20417,
+      "duration_ms": 2250,
+      "stream": "downstream",
+      "attributes": {
+        "timeout": 736
+      },
+      "applied_ms": 20417,
+      "reverted_ms": 23407
+    }
+  ],
+  "backlog_samples": {
+    "taken": 27,
+    "skipped": 0,
+    "mismatched": 0
+  },
+  "checks": [
+    {
+      "name": "q1_every_accepted_job_completed_or_dead",
+      "passed": true,
+      "detail": "2000 accepted: 2000 completed, 0 dead"
+    },
+    {
+      "name": "q4_one_job_per_dedupe_key",
+      "passed": true,
+      "detail": "2000 keys, 2000 jobs"
+    },
+    {
+      "name": "q3_no_overlapping_leases",
+      "passed": true,
+      "detail": "2035 leases checked"
+    },
+    {
+      "name": "backlog_counter_matches_real_count",
+      "passed": true,
+      "detail": "27 samples during the run and one at the end matched"
+    },
+    {
+      "name": "run_tx_effect_applied_once",
+      "passed": true,
+      "detail": "2000 effects"
+    },
+    {
+      "name": "workers_and_dispatcher_reach_postgres_through_toxiproxy",
+      "passed": true,
+      "detail": "31 connections, all from toxiproxy"
+    }
+  ]
+}

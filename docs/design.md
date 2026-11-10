@@ -241,7 +241,7 @@ SELECT id, shop_id, cost FROM jobs
  WHERE state = 'queued' AND run_at <= statement_timestamp() AND <shop filter>
  ORDER BY run_at, id
  LIMIT $n
- FOR UPDATE SKIP LOCKED;
+ FOR NO KEY UPDATE SKIP LOCKED;     -- not FOR UPDATE (D-047)
 -- 2. For each distinct candidate shop, in shop-ID order (so no deadlocks):
 SELECT pg_advisory_xact_lock(hashtextextended('claim:' || $shop, 0));
 SELECT count(*) FROM jobs WHERE shop_id = $shop AND state = 'running';   -- exact room under the cap
@@ -260,7 +260,7 @@ COMMIT;   -- unkept candidates' row locks are released here
 ```
 
 - The advisory lock per shop is what makes Q5 hold, even if a second dispatcher is claiming during a split brain (D-002). A single leader needs it only as a safety net.
-- `FOR UPDATE SKIP LOCKED` means claimers never wait on each other's rows, and two claimers can never take the same row.
+- `FOR NO KEY UPDATE SKIP LOCKED` means claimers never wait on each other's rows, and two claimers can never take the same row. It is not `FOR UPDATE`, which also clashes with the `FOR KEY SHARE` lock a foreign key takes: while a run's step had written its `idempotency_keys` row, the job would be skipped by every claim (D-047).
 - The throttle check inside the transaction makes AC-6.2 exact: no claim that starts after a throttle commits can claim for that shop before `throttled_until`.
 - The dispatcher spends one token per claimed job, and `n` never exceeds the shop's whole tokens. Token buckets refill using the dispatcher's monotonic clock. They are rate limits, not leases or timestamps, so NFR-14 doesn't apply to them.
 
@@ -328,7 +328,7 @@ COMMIT;   -- unkept candidates' row locks are released here
   ```sql
   WITH expired AS (
     SELECT id FROM jobs WHERE state = 'running' AND lease_expires_at <= statement_timestamp()
-    ORDER BY lease_expires_at LIMIT 500 FOR UPDATE SKIP LOCKED)
+    ORDER BY lease_expires_at LIMIT 500 FOR NO KEY UPDATE SKIP LOCKED)   -- not FOR UPDATE (D-047)
   UPDATE jobs j
      SET attempts = j.attempts + 1, lease_owner = NULL, lease_expires_at = NULL, last_error = 'lease expired',
          state = CASE WHEN j.attempts + 1 >= k.max_attempts THEN 'dead' ELSE 'queued' END,
@@ -382,9 +382,9 @@ func Key(jobID int64, step string) string // "job-<id>-<step>"
 
 **Enqueue validation (D-039):** a request is checked in full before anything is written, and any failure creates nothing.
 - 413: the body is larger than the max request body.
-- 422: the body is not a single JSON object, it has a field not listed above, `shop` or `kind` is empty, `payload` is missing or not a JSON object, `run_at` is not an RFC 3339 time, or the kind is unknown.
+- 422: the body is not a single JSON object, it has a field not listed above, `shop` or `kind` is empty, `payload` is missing or not a JSON object, `run_at` is not an RFC 3339 time, `dedupe_key` is empty, longer than 255 bytes or contains control characters (D-045), or the kind is unknown.
 - 404: the shop is unknown.
-- `dedupe_key` returns 422 until enqueue dedupe exists (phase 3), so a caller never believes a retry was deduplicated when it wasn't.
+- If the shop already has the `dedupe_key`, the enqueue returns 200 `{id, duplicate: true}` with the existing job's ID and creates nothing (§5.1, D-018).
 
 **Webhook receiver:**
 1. It reads the raw body, up to the max body size.
@@ -456,7 +456,7 @@ Handlers are registered by kind. Test-only kinds (used by chaos runs and invaria
 |---|---|---|---|
 | Q1 | No accepted job is lost: each ends completed or dead. | The enqueue commits before 201; Postgres keeps its durable defaults (`fsync` and `synchronous_commit` on); leases expire and the reaper requeues; attempts are bounded, so every job ends | `tests/chaos`: 100 seeded runs (§18); basic in-process version in phase 2 |
 | Q2 | A worker whose lease expired cannot complete, fail or reschedule the job. | The fenced predicate checks `claim_seq`, the owner, the state and `lease_expires_at > statement_timestamp()` (D-036); heartbeats can't revive an expired lease | `tests/invariants`: hold a handler past its lease, let a second worker claim and complete, release the first; its write affects 0 rows. Also: lease expired but not yet reaped; the write still affects 0 rows |
-| Q3 | At most one live lease per job. | `FOR UPDATE SKIP LOCKED` plus the state check on claim; `claim_seq` is monotonic | `tests/invariants` (rapid): many concurrent claimers on the real claim SQL, no dispatcher; each (job, `claim_seq`) has one owner, and lease intervals of one job never overlap by the DB clock |
+| Q3 | At most one live lease per job. | `FOR NO KEY UPDATE SKIP LOCKED` plus the state check on claim (D-047); `claim_seq` is monotonic | `tests/invariants` (rapid): many concurrent claimers on the real claim SQL, no dispatcher; each (job, `claim_seq`) has one owner, and lease intervals of one job never overlap by the DB clock |
 | Q4 | A webhook delivered k times creates exactly one job. | Dedupe keys in the enqueue transaction, unique on (shop, key), checked before admission | `tests/invariants`: k concurrent and k sequential deliveries of one webhook ID, including across the job's completion |
 | Q5 | A shop's running jobs never exceed `max_concurrency`. | Per-shop advisory lock plus an exact running count inside the claim transaction | dispatcher property test; two dispatchers claiming at once; running counts sampled during chaos and bench runs |
 | Q6 | Under saturation, each backlogged shop gets at least its weighted share of cost units, within tolerance. | Standard DRR with costs (§6.2); tolerance qᵢ + C (D-026) | `internal/scheduler` (rapid): random weights, costs and batch sizes; the bound checked after every claim |
@@ -536,9 +536,9 @@ Handlers are registered by kind. Test-only kinds (used by chaos runs and invaria
 ## 18. Chaos harness (D-023, D-025)
 
 - **One run:**
-  1. Bring up the stack with short leases. In the chaos profile, workers and the dispatcher reach Postgres through Toxiproxy.
+  1. Bring up the stack with short leases. In the chaos profile, workers and the dispatcher reach Postgres through Toxiproxy. The chaos stack is its own Compose project, `jobqueue-chaos`, with its own Postgres volume and no published ports, so it never touches the `make up` stack or its data. `make chaos` removes it, volume included, when it ends (D-042).
   2. Enqueue 2,000 jobs across 5 shops with dedupe keys, so retried enqueues stay safe and every accepted ID is known. The jobs use a test kind that sleeps randomly and writes a `run.Tx()` effect; from phase 5 they also call `mockshop`.
-  3. Run a seeded fault schedule. Each step is one of: kill -9 a worker container (it restarts); pause and unpause a worker past its lease; restart Postgres; or add Toxiproxy latency, timeouts or `reset_peer` on the Postgres links.
+  3. Run a seeded fault schedule. Each step is one of: kill -9 a worker container (it restarts); pause and unpause a worker past its lease; restart Postgres, either cleanly or by SIGKILL and then start, as the seed chooses (D-043); or add Toxiproxy latency, timeouts or `reset_peer` on the Postgres links. Every fault starts and ends within the first 30 s of the run (D-044).
   4. Wait until every accepted job is terminal, or until the run timeout (setting: 120 s), which counts as a failure.
 - **Checks:**
   - Every accepted ID is completed or dead (Q1).
@@ -546,9 +546,9 @@ Handlers are registered by kind. Test-only kinds (used by chaos runs and invaria
   - The backlog counter matches a real count.
   - Each completed job's `run.Tx()` effect was applied once.
   - From phase 5, `mockshop`'s applied mutations equal one per completed job (NFR-11).
-- **Output and replay:** each run writes its seed, fault schedule and check results to `bench/results/chaos/`. `CHAOS_SEED=<n> make chaos-one` replays a single run. Chaos runs use a 2 s lease, and the target is 30 s per run (both settings).
+- **Output and replay:** each run writes its seed, fault schedule, duration and check results to `bench/results/chaos/`. `CHAOS_SEED=<n> make chaos-one` replays a single run. Each `make chaos` starts from a fresh random base seed, which it prints and records, and `CHAOS_BASE_SEED=<n>` repeats a whole batch (D-046). Chaos runs use a 2 s lease and a 30 s fault window, with the workload sized to about that length (both settings). A run fails only at the run timeout (D-044).
 - **Crash-recovery scenario (NFR-10):** this runs with the default 30 s lease and measures the time from the kill to the last orphaned job's new claim.
-- **Docker control:** the harness talks to the Docker Engine API over `/var/run/docker.sock` with `net/http`, and drives Toxiproxy's HTTP API (D-006).
+- **Docker control:** the harness talks to the Docker Engine API over `/var/run/docker.sock` with `net/http`, and drives Toxiproxy's HTTP API (D-006). It acts only on the `worker-1`, `worker-2` and `postgres` containers of the `jobqueue-chaos` project, found by their Compose labels (D-042).
 
 ## 19. Metrics
 

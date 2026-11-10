@@ -30,6 +30,10 @@ const (
 	ShopC = "shop-c.test"
 )
 
+// Retention keeps every row for longer than any test runs, so the pruner never
+// removes a row a test still checks (D-015).
+var Retention = store.Retention{Completed: 24 * time.Hour, Discarded: 24 * time.Hour, DedupeKeys: 7 * 24 * time.Hour}
+
 // RepoRoot returns the repository's root directory.
 func RepoRoot(t testing.TB) string {
 	t.Helper()
@@ -105,11 +109,11 @@ func (e *Env) EnqueueAt(t testing.TB, shop, kind string, payload any, runAt *tim
 	if err != nil {
 		t.Fatal(err)
 	}
-	id, err := store.Enqueue(t.Context(), e.Pool, store.NewJob{Shop: shop, Kind: kind, Payload: body, RunAt: runAt})
+	res, err := store.Enqueue(t.Context(), e.Pool, store.NewJob{Shop: shop, Kind: kind, Payload: body, RunAt: runAt})
 	if err != nil {
 		t.Fatalf("enqueue: %v", err)
 	}
-	return id
+	return res.ID
 }
 
 // Job reads one job.

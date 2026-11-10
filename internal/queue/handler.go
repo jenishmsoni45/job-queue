@@ -16,6 +16,8 @@ import (
 	"sync"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/jenishmsoni45/job-queue/internal/idem"
 )
 
 // Handler runs one job. It returns nil on success, Permanent(err) to send the
@@ -77,6 +79,32 @@ func (r *Run) Tx(ctx context.Context) (pgx.Tx, error) {
 		r.tx = tx
 	}
 	return managedTx{r.tx}, nil
+}
+
+// Step runs one step of the handler that commits on its own (design §10,
+// D-017). It begins a transaction, records idem.Once(job, name) in it, runs fn,
+// and commits fn's writes and the record together. If an earlier run of this
+// job already committed the step, Step skips fn and returns nil, so the step's
+// effect is applied at most once per job, even when runs overlap (AC-7.1).
+//
+// fn must not commit or roll back tx; Step does that. An error from fn rolls
+// the step back and is returned. Use Step for effects that must stick even if
+// this run later fails or loses its lease. Effects that should commit only
+// with the job's completion belong in Tx instead.
+func (r *Run) Step(ctx context.Context, name string, fn func(ctx context.Context, tx pgx.Tx) error) error {
+	if err := idem.ValidStep(name); err != nil {
+		return err
+	}
+	return pgx.BeginFunc(ctx, r.db, func(tx pgx.Tx) error {
+		first, err := idem.Once(ctx, tx, r.Job.ID, name)
+		if err != nil || !first {
+			return err
+		}
+		if err := fn(ctx, managedTx{tx}); err != nil {
+			return fmt.Errorf("queue: step %q: %w", name, err)
+		}
+		return nil
+	})
 }
 
 // finish is called by the handler goroutine when the handler returns. It

@@ -1,0 +1,124 @@
+{
+  "seed": 90807767,
+  "started": "2026-11-09T16:57:04.374034209Z",
+  "duration_ms": 25730,
+  "passed": true,
+  "jobs": {
+    "planned": 2000,
+    "accepted": 2000,
+    "enqueue_retries": 0,
+    "duplicates": 0,
+    "completed": 2000,
+    "dead": 0,
+    "not_terminal": 0
+  },
+  "faults": [
+    {
+      "kind": "restart_postgres",
+      "target": "postgres",
+      "at_ms": 5637,
+      "duration_ms": 0,
+      "applied_ms": 5639,
+      "reverted_ms": 5809
+    },
+    {
+      "kind": "timeout",
+      "target": "pg-dispatcher",
+      "at_ms": 6353,
+      "duration_ms": 2927,
+      "stream": "downstream",
+      "attributes": {
+        "timeout": 1324
+      },
+      "applied_ms": 6357,
+      "reverted_ms": 9289
+    },
+    {
+      "kind": "kill_worker",
+      "target": "worker-1",
+      "at_ms": 8254,
+      "duration_ms": 699,
+      "applied_ms": 8255,
+      "reverted_ms": 9137
+    },
+    {
+      "kind": "kill_worker",
+      "target": "worker-1",
+      "at_ms": 9893,
+      "duration_ms": 1012,
+      "applied_ms": 9900,
+      "reverted_ms": 11080
+    },
+    {
+      "kind": "pause_worker",
+      "target": "worker-2",
+      "at_ms": 16080,
+      "duration_ms": 3128,
+      "applied_ms": 16080,
+      "reverted_ms": 19271
+    },
+    {
+      "kind": "reset_peer",
+      "target": "pg-worker-1",
+      "at_ms": 19894,
+      "duration_ms": 2680,
+      "stream": "downstream",
+      "attributes": {
+        "timeout": 131
+      },
+      "applied_ms": 19894,
+      "reverted_ms": 22668
+    },
+    {
+      "kind": "latency",
+      "target": "pg-worker-2",
+      "at_ms": 23142,
+      "duration_ms": 1264,
+      "stream": "downstream",
+      "attributes": {
+        "jitter": 88,
+        "latency": 316
+      },
+      "applied_ms": 23142,
+      "reverted_ms": 24409
+    }
+  ],
+  "samples": {
+    "taken": 25,
+    "skipped": 0,
+    "backlog_mismatched": 0,
+    "connections_seen": 312
+  },
+  "checks": [
+    {
+      "name": "q1_every_accepted_job_completed_or_dead",
+      "passed": true,
+      "detail": "2000 accepted: 2000 completed, 0 dead"
+    },
+    {
+      "name": "q4_one_job_per_dedupe_key",
+      "passed": true,
+      "detail": "2000 keys, 2000 jobs"
+    },
+    {
+      "name": "q3_no_overlapping_leases",
+      "passed": true,
+      "detail": "2073 leases checked"
+    },
+    {
+      "name": "backlog_counter_matches_real_count",
+      "passed": true,
+      "detail": "25 samples during the run and one at the end matched"
+    },
+    {
+      "name": "run_tx_effect_applied_once",
+      "passed": true,
+      "detail": "2000 effects"
+    },
+    {
+      "name": "workers_and_dispatcher_reach_postgres_through_toxiproxy",
+      "passed": true,
+      "detail": "333 connections seen across the run's samples, all through toxiproxy"
+    }
+  ]
+}

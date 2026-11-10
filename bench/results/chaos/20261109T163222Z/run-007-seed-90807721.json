@@ -1,0 +1,91 @@
+{
+  "seed": 90807721,
+  "started": "2026-11-09T16:35:03.295084834Z",
+  "duration_ms": 21633,
+  "passed": true,
+  "jobs": {
+    "planned": 2000,
+    "accepted": 2000,
+    "enqueue_retries": 0,
+    "duplicates": 0,
+    "completed": 2000,
+    "dead": 0,
+    "not_terminal": 0
+  },
+  "faults": [
+    {
+      "kind": "pause_worker",
+      "target": "worker-1",
+      "at_ms": 3351,
+      "duration_ms": 2826,
+      "applied_ms": 3351,
+      "reverted_ms": 6234
+    },
+    {
+      "kind": "reset_peer",
+      "target": "pg-worker-1",
+      "at_ms": 10054,
+      "duration_ms": 2092,
+      "stream": "upstream",
+      "attributes": {
+        "timeout": 729
+      },
+      "applied_ms": 10054,
+      "reverted_ms": 12149
+    },
+    {
+      "kind": "kill_worker",
+      "target": "worker-1",
+      "at_ms": 10473,
+      "duration_ms": 1710,
+      "applied_ms": 10474,
+      "reverted_ms": 12359
+    },
+    {
+      "kind": "kill_worker",
+      "target": "worker-1",
+      "at_ms": 20597,
+      "duration_ms": 809,
+      "applied_ms": 20602,
+      "reverted_ms": 21609
+    }
+  ],
+  "samples": {
+    "taken": 21,
+    "skipped": 0,
+    "backlog_mismatched": 0,
+    "connections_seen": 290
+  },
+  "checks": [
+    {
+      "name": "q1_every_accepted_job_completed_or_dead",
+      "passed": true,
+      "detail": "2000 accepted: 2000 completed, 0 dead"
+    },
+    {
+      "name": "q4_one_job_per_dedupe_key",
+      "passed": true,
+      "detail": "2000 keys, 2000 jobs"
+    },
+    {
+      "name": "q3_no_overlapping_leases",
+      "passed": true,
+      "detail": "2016 leases checked"
+    },
+    {
+      "name": "backlog_counter_matches_real_count",
+      "passed": true,
+      "detail": "21 samples during the run and one at the end matched"
+    },
+    {
+      "name": "run_tx_effect_applied_once",
+      "passed": true,
+      "detail": "2000 effects"
+    },
+    {
+      "name": "workers_and_dispatcher_reach_postgres_through_toxiproxy",
+      "passed": true,
+      "detail": "299 connections seen across the run's samples, all through toxiproxy"
+    }
+  ]
+}

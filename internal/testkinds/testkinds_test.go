@@ -24,8 +24,8 @@ func run(t *testing.T, ctx context.Context, kind, payload string, attempts int32
 func TestRegisterAddsEveryKind(t *testing.T) {
 	reg := queue.NewRegistry()
 	testkinds.Register(reg)
-	if got := reg.Kinds(); len(got) != 4 {
-		t.Errorf("kinds = %v, want the four test kinds", got)
+	if got := reg.Kinds(); len(got) != 5 {
+		t.Errorf("kinds = %v, want the five test kinds", got)
 	}
 }
 

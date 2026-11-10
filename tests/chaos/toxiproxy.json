@@ -1,0 +1,5 @@
+[
+  {"name": "pg-dispatcher", "listen": "0.0.0.0:15433", "upstream": "postgres:5432", "enabled": true},
+  {"name": "pg-worker-1", "listen": "0.0.0.0:15431", "upstream": "postgres:5432", "enabled": true},
+  {"name": "pg-worker-2", "listen": "0.0.0.0:15432", "upstream": "postgres:5432", "enabled": true}
+]

@@ -1,5 +1,6 @@
 # Local stack. Every image is pinned to an exact version and digest, every published port is
-# bound to 127.0.0.1, and no service mounts the Docker socket. tests/compose checks all of this.
+# bound to 127.0.0.1, and only the chaos harness mounts the Docker socket, under the chaos
+# profile (D-025). tests/compose checks all of this.
 name: jobqueue
 
 x-pg-client-env: &pg-client-env
@@ -155,6 +156,29 @@ services:
       - gomodcache:/go/pkg/mod
       - gobuildcache:/root/.cache/go-build
       - golangcilintcache:/root/.cache/golangci-lint
+
+  # The chaos harness (design §18, D-025, D-042): the only service that mounts the Docker
+  # socket, and only under the chaos profile. scripts/chaos.sh runs it in the separate
+  # jobqueue-chaos project with docker-compose.chaos.yml, never beside the `make up` stack.
+  # It runs the harness binary that make builds in the tools container, and it acts only on
+  # that project's worker-1, worker-2 and postgres containers. Like tools, it is a command
+  # runner with no healthcheck (D-033).
+  chaos:
+    build:
+      context: tools
+      dockerfile: Dockerfile
+    image: jobqueue-tools:local
+    profiles: [chaos]
+    working_dir: /src/tests/chaos
+    environment:
+      <<: *pg-client-env
+      CHAOS_API_URL: http://api:8080
+      CHAOS_TOXIPROXY_URL: http://toxiproxy:8474
+      CHAOS_DOCKER_SOCKET: /var/run/docker.sock
+      CHAOS_CONFIG: /src/tests/chaos/shops.json
+    volumes:
+      - .:/src
+      - /var/run/docker.sock:/var/run/docker.sock
 
 volumes:
   pgdata:

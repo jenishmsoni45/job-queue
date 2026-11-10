@@ -46,6 +46,13 @@ Each entry gives the question, the options considered, the decision and its cons
 | D-038 | Hard-timeout grace period | Phase 2: setting missing from design §2 | Decided |
 | D-039 | What makes an enqueue request invalid | Phase 2: AC-1.3 "invalid payload" undefined | Decided |
 | D-040 | When a dispatcher that lost the lock tries again | Phase 2: gap in design §9 | Decided |
+| D-041 | What the pruner deletes | Phase 3: P3-7 conflicts with design §9 | Decided |
+| D-042 | Where chaos runs happen | Phase 3: gap in design §18 | Decided |
+| D-043 | How the chaos harness restarts Postgres | Phase 3: gap in design §18 | Decided |
+| D-044 | What the 30 s chaos run length means | Phase 3: D-023 target undefined | Decided |
+| D-045 | What makes a dedupe key valid | Phase 3: follows D-039 | Decided |
+| D-046 | Which seeds `make chaos` uses | Phase 3: gap in D-023 | Decided |
+| D-047 | The row lock claims and the reaper take | Phase 3: found by the AC-7.1 test | Decided |
 
 ---
 
@@ -627,3 +634,81 @@ Each entry gives the question, the options considered, the decision and its cons
   - The wait is a multiple of the standby retry setting, with no setting of its own.
 - **Why not B:** the old leader nearly always wins the race, so a leader whose lock connection keeps dropping keeps the lock, and a healthy standby never takes over (P2-8).
 - **Consequences:** with no standby running, a dispatcher that loses its lock connection leads again only after the wait, so claims pause for that long. Workers waiting on it get 503 and retry, as in any leader change (design §6.4). `TestStandbyTakesOverWhenTheLeaderConnectionCloses` covers the takeover.
+
+## D-041 · What the pruner deletes
+
+- **Date:** 2026-11-08 · **Phase:** 3 · **Source:** Conflict found while reading phase 3. Design §9 says the pruner removes completed jobs and discarded jobs past their retention windows. P3-7 says "every job that isn't completed" is untouched. Discarding a job only becomes possible in phase 6.
+- **Options:**
+  - A. Follow design §9: prune completed jobs, discarded jobs and dedupe keys now.
+  - B. Prune completed jobs and dedupe keys now, and add discarded jobs in phase 6 with the discard action.
+- **Decision:** A (the user's choice).
+  - Tests set `discarded_at` directly, since nothing else can discard a job before phase 6.
+  - P3-7 in `phases.md` now reads "every job that is neither completed nor discarded".
+- **Why not B:** the pruner would be split across two phases, and phase 6 would have to remember to finish it.
+
+## D-042 · Where chaos runs happen
+
+- **Date:** 2026-11-08 · **Phase:** 3 · **Source:** Gap. Design §18 says "bring up the stack" but not which one. The harness kills and restarts containers and wipes the jobs table between runs.
+- **Options:**
+  - A. A separate Compose project, `jobqueue-chaos`.
+  - B. The normal `jobqueue` stack that `make up` runs.
+- **Decision:** A (the user's choice).
+  - The chaos stack has its own containers, network and Postgres volume, and publishes no ports.
+  - The harness acts only on the `worker-1`, `worker-2` and `postgres` containers of that project, found by their Compose labels.
+  - `make chaos` and `make chaos-one` remove the chaos stack, volume included, when they end, pass or fail. `make down` removes it too.
+- **Why not B:** each run would wipe the jobs in the development database, and the stack would be left in chaos settings until the next `make up`.
+
+## D-043 · How the chaos harness restarts Postgres
+
+- **Date:** 2026-11-08 · **Phase:** 3 · **Source:** Gap. Design §18 lists "restart Postgres" as a fault without saying how.
+- **Options:**
+  - A. A seeded mix of clean restarts and hard kills.
+  - B. Clean restarts only (Docker restart, so Postgres shuts down fast, then starts).
+  - C. Hard kills only (SIGKILL, then start).
+- **Decision:** A (the user's choice). The seed picks the kind of each Postgres fault.
+- **Why not B:** WAL crash recovery would never run, and Q1 relies on it through `fsync` and `synchronous_commit`.
+- **Why not C:** the clean-shutdown path would never run.
+
+## D-044 · What the 30 s chaos run length means
+
+- **Date:** 2026-11-08 · **Phase:** 3 · **Source:** Gap. D-023 sets "a target of 30 s per run" as a setting, and design §18 fails a run at 120 s.
+- **Options:**
+  - A. The length of the fault window.
+  - B. A pass/fail target for each run.
+- **Decision:** A (the user's choice).
+  - Every fault starts and ends within the first 30 s of a run, and the workload is sized to last about that long.
+  - A run fails only at the run timeout (120 s). Each run records its duration in its result file.
+- **Why not B:** a run that recovers correctly but slowly would count as a failure, which Q1 does not ask for.
+
+## D-045 · What makes a dedupe key valid
+
+- **Date:** 2026-11-08 · **Phase:** 3 · **Source:** Follows D-039, which rejected every `dedupe_key` until phase 3.
+- **Decision:** a `dedupe_key` is a non-empty string of at most 255 bytes with no control characters. Anything else is 422 and creates nothing. Design §11.1 now says so (approved by the user).
+- **Consequences:** a webhook ID (a UUID) and a caller's own key both fit.
+
+## D-046 · Which seeds `make chaos` uses
+
+- **Date:** 2026-11-08 · **Phase:** 3 · **Source:** Gap. D-023 says `CHAOS_SEED` replays a run, but not which seeds a batch of 100 uses.
+- **Options:**
+  - A. A fresh random base seed for each `make chaos`.
+  - B. The fixed seeds 1 to 100.
+- **Decision:** A (the user's choice).
+  - Each `make chaos` picks a random base seed, prints it and records it. Run *i* uses the base plus *i*.
+  - `CHAOS_BASE_SEED=<n>` repeats a whole batch, and `CHAOS_SEED=<n> make chaos-one` replays one run.
+- **Why not B:** every batch would run the same 100 schedules and never explore new ones.
+
+## D-047 · The row lock claims and the reaper take
+
+- **Date:** 2026-11-08 · **Phase:** 3 · **Source:** Found mid-phase by the AC-7.1 test. `run.Step` writes an `idempotency_keys` row, and that table's foreign key to `jobs` takes a `FOR KEY SHARE` lock on the job's row until the step's transaction ends. Design §6.3 and §9 picked rows with `FOR UPDATE SKIP LOCKED`, and `FOR UPDATE` clashes with `FOR KEY SHARE`. So while a step was open, the reaper and every claim silently skipped the job. A paused, partitioned or stuck worker inside a step would keep its expired job `running` until Postgres noticed the dead connection, possibly hours later, which breaks design §14 and NFR-10, and a step that never returns would put Q1 at risk. A throwaway-database probe confirmed it: with a child row's transaction open, `FOR UPDATE SKIP LOCKED` saw 0 rows, `FOR NO KEY UPDATE SKIP LOCKED` saw 1, and a plain `UPDATE` went through without waiting.
+- **Options:**
+  - A. Claims and the reaper lock with `FOR NO KEY UPDATE SKIP LOCKED`.
+  - B. Drop the foreign key from `idempotency_keys` to `jobs`, and have the pruner delete a pruned job's keys itself.
+  - C. Keep the design, and document that a job can't be reaped or claimed while one of its steps is open.
+- **Decision:** A (the user's choice). Design §6.3, §9 and the Q3 row of §13 now say so.
+  - `FOR NO KEY UPDATE` still conflicts with itself, so claimers and the reaper exclude each other exactly as before, and Q3 is unchanged. It does not conflict with the `FOR KEY SHARE` lock a foreign key takes.
+  - Both statements change only non-key columns, which is what `FOR NO KEY UPDATE` is for. Fenced writes are plain `UPDATE`s, which already take that lock.
+  - The pruner's deletes keep `FOR UPDATE`, which a delete needs. A completed job with a step still open is skipped and pruned on a later pass.
+  - D-002 says the dispatcher claims "with `FOR UPDATE SKIP LOCKED`". This entry supersedes that detail.
+- **Why not B:** a step could be recorded for a job that doesn't exist, and claims would still clash with any other table that references `jobs`, such as a handler's own effects in `run.Tx()`.
+- **Why not C:** the risk to Q1 and NFR-10 would stay.
+- **Consequences:** store tests hold a step's transaction open and check that the reaper still requeues the job and a claim still takes it.

@@ -16,7 +16,7 @@ concurrency:
 jobs:
   ci:
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -29,8 +29,13 @@ jobs:
       # lint, test (-race), audit, the console typecheck and build, and the P1-1 stack check.
       - run: make ci
 
+      # P3-9: three seeded chaos runs on the separate chaos stack (D-022, D-042).
+      - name: Chaos smoke
+        run: make chaos-smoke
+
       - name: Show the stack on failure
         if: failure()
         run: |
           docker compose --profile tools ps --all || true
           docker compose --profile tools logs --no-color --tail 100 || true
+          docker compose -p jobqueue-chaos -f docker-compose.yml -f docker-compose.chaos.yml ps --all || true

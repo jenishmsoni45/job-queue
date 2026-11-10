@@ -1,7 +1,7 @@
 // Command queued is the queue server. Each process runs one role (D-014):
 //
 //	queued api          enqueue and read jobs (POST /v1/jobs, GET /v1/jobs/{id})
-//	queued dispatcher   leader lock, claims for long-polling workers, reaper
+//	queued dispatcher   leader lock, claims for long-polling workers, reaper, pruner
 //	queued worker       handler pool, batched heartbeats, fenced results
 //
 // and it has two one-shot commands:
@@ -20,6 +20,10 @@
 //	QUEUED_REFRESH_MS         dispatcher: claim retry when nothing was notified (250)
 //	QUEUED_CLAIM_TIMEOUT_MS   dispatcher and worker: claim long-poll timeout (25000)
 //	QUEUED_REAPER_SCAN_MS     dispatcher: reaper scan (5000)
+//	QUEUED_PRUNE_INTERVAL_MS  dispatcher: pruner interval (60000)
+//	QUEUED_COMPLETED_RETENTION_MS  dispatcher: keep completed jobs this long (86400000, 24 h)
+//	QUEUED_DISCARDED_RETENTION_MS  dispatcher: keep discarded jobs this long after discard (86400000, 24 h)
+//	QUEUED_DEDUPE_WINDOW_MS   dispatcher: keep dedupe keys this long (604800000, 7 days)
 //	QUEUED_BACKOFF_BASE_MS    worker: retry backoff base (2000)
 //	QUEUED_BACKOFF_CAP_MS     worker: retry backoff cap (300000)
 //	QUEUED_DRAIN_MS           worker: on SIGTERM, how long in-flight runs may finish (8000)
@@ -66,7 +70,7 @@ const usage = `usage: queued <command>
 
 roles (long-running):
   api           enqueue and read API
-  dispatcher    leader lock, claims and reaper
+  dispatcher    leader lock, claims, reaper and pruner
   worker        job handlers
 
 one-shot:
@@ -128,6 +132,8 @@ type settings struct {
 	refresh       time.Duration
 	longPoll      time.Duration
 	reaperScan    time.Duration
+	pruneInterval time.Duration
+	retention     store.Retention
 	backoff       queue.Backoff
 	drain         time.Duration
 }
@@ -162,6 +168,12 @@ func loadSettings(getenv func(string) string) (settings, error) {
 	s.refresh = ms("QUEUED_REFRESH_MS", 250)
 	s.longPoll = ms("QUEUED_CLAIM_TIMEOUT_MS", 25_000)
 	s.reaperScan = ms("QUEUED_REAPER_SCAN_MS", 5_000)
+	s.pruneInterval = ms("QUEUED_PRUNE_INTERVAL_MS", 60_000)
+	s.retention = store.Retention{
+		Completed:  ms("QUEUED_COMPLETED_RETENTION_MS", 24*60*60*1000),
+		Discarded:  ms("QUEUED_DISCARDED_RETENTION_MS", 24*60*60*1000),
+		DedupeKeys: ms("QUEUED_DEDUPE_WINDOW_MS", 7*24*60*60*1000),
+	}
 	s.backoff = queue.Backoff{Base: ms("QUEUED_BACKOFF_BASE_MS", 2_000), Cap: ms("QUEUED_BACKOFF_CAP_MS", 300_000)}
 	s.drain = ms("QUEUED_DRAIN_MS", 8_000)
 	if err := s.backoff.Validate(); err != nil {
@@ -263,6 +275,9 @@ func runDispatcher(ctx context.Context, addr string, s settings, connCfg *pgx.Co
 		ReaperInterval: s.reaperScan,
 		ReaperBatch:    500, // design §9
 		StandbyRetry:   time.Second,
+		PruneInterval:  s.pruneInterval,
+		PruneBatch:     5_000, // design §9
+		Retention:      s.retention,
 		Log:            log,
 	})
 	if err != nil {

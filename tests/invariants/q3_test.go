@@ -14,40 +14,6 @@ import (
 	"github.com/jenishmsoni45/job-queue/internal/testkinds"
 )
 
-// leaseLogSQL installs a test-only trigger that records every lease with
-// database times: when a claim starts it, and when it ends. A lease ends at the
-// fenced write that moved the job out of running, or at its expiry if that
-// came first (a reaped lease ended when it expired, not when it was reaped).
-const leaseLogSQL = `
-CREATE TABLE lease_log (
-  job_id     bigint      NOT NULL,
-  claim_seq  int         NOT NULL,
-  owner      text        NOT NULL,
-  started_at timestamptz NOT NULL,
-  ended_at   timestamptz,
-  PRIMARY KEY (job_id, claim_seq)       -- one owner per (job, claim_seq)
-);
-CREATE FUNCTION log_lease() RETURNS trigger LANGUAGE plpgsql AS $$
-BEGIN
-  IF OLD.state = 'running' AND (NEW.state <> 'running' OR NEW.claim_seq <> OLD.claim_seq) THEN
-    UPDATE lease_log SET ended_at = least(statement_timestamp(), OLD.lease_expires_at)
-     WHERE job_id = OLD.id AND claim_seq = OLD.claim_seq;
-  END IF;
-  IF NEW.state = 'running' AND (OLD.state <> 'running' OR NEW.claim_seq <> OLD.claim_seq) THEN
-    INSERT INTO lease_log VALUES (NEW.id, NEW.claim_seq, NEW.lease_owner, statement_timestamp(), NULL);
-  END IF;
-  RETURN NEW;
-END $$;
-CREATE TRIGGER log_lease AFTER UPDATE ON jobs FOR EACH ROW EXECUTE FUNCTION log_lease();`
-
-type leaseRecord struct {
-	jobID   int64
-	seq     int32
-	owner   string
-	started time.Time
-	ended   *time.Time
-}
-
 // P2-2, Q3: many concurrent claimers run the real claim SQL against the same
 // jobs, with no dispatcher, while jobs complete, fail and are requeued at once,
 // and leases are abandoned and reaped. Every (job, claim_seq) has exactly one
@@ -55,13 +21,13 @@ type leaseRecord struct {
 func TestQ3AtMostOneLiveLeasePerJob(t *testing.T) {
 	t.Parallel()
 	env := queuetest.New(t, queuetest.Config(t, shortLeases(40, 10, 1000)))
-	if _, err := env.Pool.Exec(t.Context(), leaseLogSQL); err != nil {
+	if _, err := env.Pool.Exec(t.Context(), queuetest.LeaseLogSQL); err != nil {
 		t.Fatal(err)
 	}
 
 	rapid.Check(t, func(rt *rapid.T) {
 		ctx := context.Background()
-		if _, err := env.Pool.Exec(ctx, `TRUNCATE jobs, lease_log; UPDATE shop_state SET backlog = 0`); err != nil {
+		if _, err := env.Pool.Exec(ctx, `TRUNCATE jobs, idempotency_keys, lease_log; UPDATE shop_state SET backlog = 0`); err != nil {
 			rt.Fatal(err)
 		}
 		jobs := rapid.IntRange(1, 10).Draw(rt, "jobs")
@@ -153,31 +119,20 @@ func TestQ3AtMostOneLiveLeasePerJob(t *testing.T) {
 			rt.Error(err)
 		}
 
-		records := readLeaseLog(rt, env)
+		records, err := queuetest.ReadLeaseLog(ctx, env.Pool)
+		if err != nil {
+			rt.Fatal(err)
+		}
 		if len(records) != len(claimedBy) {
 			rt.Errorf("lease log has %d leases, claimers received %d", len(records), len(claimedBy))
 		}
-		for i, rec := range records {
-			if owner, ok := claimedBy[[2]int64{rec.jobID, int64(rec.seq)}]; !ok || owner != rec.owner {
-				rt.Errorf("job %d claim_seq %d: logged owner %s, claimer saw %q", rec.jobID, rec.seq, rec.owner, owner)
+		for _, rec := range records {
+			if owner, ok := claimedBy[[2]int64{rec.JobID, int64(rec.Seq)}]; !ok || owner != rec.Owner {
+				rt.Errorf("job %d claim_seq %d: logged owner %s, claimer saw %q", rec.JobID, rec.Seq, rec.Owner, owner)
 			}
-			if i == 0 || records[i-1].jobID != rec.jobID {
-				if rec.seq != 1 {
-					rt.Errorf("job %d: first logged claim_seq is %d, want 1", rec.jobID, rec.seq)
-				}
-				continue
-			}
-			prev := records[i-1]
-			if rec.seq != prev.seq+1 {
-				rt.Errorf("job %d: claim_seq jumped from %d to %d", rec.jobID, prev.seq, rec.seq)
-			}
-			if prev.ended == nil {
-				rt.Errorf("job %d: lease %d (%s) never ended, but lease %d (%s) started at %v",
-					rec.jobID, prev.seq, prev.owner, rec.seq, rec.owner, rec.started)
-			} else if prev.ended.After(rec.started) {
-				rt.Errorf("job %d: lease %d (%s) ended at %v, after lease %d (%s) started at %v",
-					rec.jobID, prev.seq, prev.owner, *prev.ended, rec.seq, rec.owner, rec.started)
-			}
+		}
+		for _, err := range queuetest.LeaseLogErrors(records, false) {
+			rt.Error(err)
 		}
 		var running int
 		if err := env.Pool.QueryRow(ctx, `
@@ -189,25 +144,4 @@ func TestQ3AtMostOneLiveLeasePerJob(t *testing.T) {
 			rt.Errorf("%d running jobs disagree with their current lease", running)
 		}
 	})
-}
-
-func readLeaseLog(rt *rapid.T, env *queuetest.Env) []leaseRecord {
-	rows, err := env.Pool.Query(context.Background(),
-		`SELECT job_id, claim_seq, owner, started_at, ended_at FROM lease_log ORDER BY job_id, claim_seq`)
-	if err != nil {
-		rt.Fatal(err)
-	}
-	defer rows.Close()
-	var out []leaseRecord
-	for rows.Next() {
-		var r leaseRecord
-		if err := rows.Scan(&r.jobID, &r.seq, &r.owner, &r.started, &r.ended); err != nil {
-			rt.Fatal(err)
-		}
-		out = append(out, r)
-	}
-	if err := rows.Err(); err != nil {
-		rt.Fatal(err)
-	}
-	return out
 }

@@ -1,0 +1,78 @@
+{
+  "seed": 204285953,
+  "started": "2026-11-09T04:52:09.632684258Z",
+  "duration_ms": 26016,
+  "passed": true,
+  "jobs": {
+    "planned": 2000,
+    "accepted": 2000,
+    "enqueue_retries": 0,
+    "duplicates": 0,
+    "completed": 2000,
+    "dead": 0,
+    "not_terminal": 0
+  },
+  "faults": [
+    {
+      "kind": "kill_worker",
+      "target": "worker-1",
+      "at_ms": 16558,
+      "duration_ms": 556,
+      "applied_ms": 16559,
+      "reverted_ms": 17304
+    },
+    {
+      "kind": "pause_worker",
+      "target": "worker-2",
+      "at_ms": 18061,
+      "duration_ms": 3686,
+      "applied_ms": 18065,
+      "reverted_ms": 21821
+    },
+    {
+      "kind": "kill_worker",
+      "target": "worker-1",
+      "at_ms": 24159,
+      "duration_ms": 1642,
+      "applied_ms": 24163,
+      "reverted_ms": 25983
+    }
+  ],
+  "backlog_samples": {
+    "taken": 25,
+    "skipped": 0,
+    "mismatched": 0
+  },
+  "checks": [
+    {
+      "name": "q1_every_accepted_job_completed_or_dead",
+      "passed": true,
+      "detail": "2000 accepted: 2000 completed, 0 dead"
+    },
+    {
+      "name": "q4_one_job_per_dedupe_key",
+      "passed": true,
+      "detail": "2000 keys, 2000 jobs"
+    },
+    {
+      "name": "q3_no_overlapping_leases",
+      "passed": true,
+      "detail": "2000 leases checked"
+    },
+    {
+      "name": "backlog_counter_matches_real_count",
+      "passed": true,
+      "detail": "25 samples during the run and one at the end matched"
+    },
+    {
+      "name": "run_tx_effect_applied_once",
+      "passed": true,
+      "detail": "2000 effects"
+    },
+    {
+      "name": "workers_and_dispatcher_reach_postgres_through_toxiproxy",
+      "passed": true,
+      "detail": "21 connections, all from toxiproxy"
+    }
+  ]
+}

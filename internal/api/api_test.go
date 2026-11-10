@@ -97,7 +97,8 @@ func TestEnqueueCreatesACommittedJob(t *testing.T) {
 	}
 }
 
-// P2-4, AC-1.2 and AC-1.3: 404, 422 and 413, each creating nothing.
+// P2-4, AC-1.2 and AC-1.3: 404, 422 and 413, each creating nothing: no job,
+// no dedupe key (D-039, D-045).
 func TestEnqueueRejectsAndCreatesNothing(t *testing.T) {
 	t.Parallel()
 	env := queuetest.New(t, nil)
@@ -128,7 +129,12 @@ func TestEnqueueRejectsAndCreatesNothing(t *testing.T) {
 		{"unstorable payload", `{"shop": "shop-a.test", "kind": "test.sleep", "payload": {"a": "\u0000"}}`, http.StatusUnprocessableEntity},
 		{"run_at not RFC 3339", valid(`, "run_at": "tomorrow"`), http.StatusUnprocessableEntity},
 		{"run_at not a string", valid(`, "run_at": 12`), http.StatusUnprocessableEntity},
-		{"dedupe_key before phase 3", valid(`, "dedupe_key": "w-1"`), http.StatusUnprocessableEntity},
+		{"empty dedupe_key", valid(`, "dedupe_key": ""`), http.StatusUnprocessableEntity},
+		{"dedupe_key over 255 bytes", valid(`, "dedupe_key": "` + strings.Repeat("k", api.MaxDedupeKeyLen+1) + `"`), http.StatusUnprocessableEntity},
+		{"control character in dedupe_key", valid(`, "dedupe_key": "w-1\n"`), http.StatusUnprocessableEntity},
+		{"dedupe_key not a string", valid(`, "dedupe_key": 7`), http.StatusUnprocessableEntity},
+		{"unknown kind with a dedupe_key", `{"shop": "shop-a.test", "kind": "test.nope", "payload": {}, "dedupe_key": "w-1"}`, http.StatusUnprocessableEntity},
+		{"unknown shop with a dedupe_key", `{"shop": "nope.test", "kind": "test.sleep", "payload": {}, "dedupe_key": "w-1"}`, http.StatusNotFound},
 		{"body over 1 MiB", `{"shop": "shop-a.test", "kind": "test.sleep", "payload": {"x": "` + strings.Repeat("a", api.MaxBodyBytes) + `"}}`, http.StatusRequestEntityTooLarge},
 	}
 	for _, tt := range tests {
@@ -142,6 +148,60 @@ func TestEnqueueRejectsAndCreatesNothing(t *testing.T) {
 	}
 	if n := countJobs(t, env); n != 0 {
 		t.Errorf("%d jobs created by rejected requests, want 0", n)
+	}
+	if n := countKeys(t, env); n != 0 {
+		t.Errorf("%d dedupe keys stored by rejected requests, want 0", n)
+	}
+	env.CheckBacklog(t)
+}
+
+func countKeys(t *testing.T, env *queuetest.Env) int {
+	t.Helper()
+	var n int
+	if err := env.Pool.QueryRow(t.Context(), `SELECT count(*) FROM dedupe_keys`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+// P3-4, AC-1.4: the first enqueue with a dedupe key gets 201; a repeat gets
+// 200 with the same ID and duplicate: true, and creates nothing. A 255-byte key
+// is accepted (D-045). The same key for another shop is another job.
+func TestEnqueueWithDedupeKey(t *testing.T) {
+	t.Parallel()
+	env := queuetest.New(t, nil)
+	srv := serve(t, env)
+	key := strings.Repeat("k", api.MaxDedupeKeyLen)
+	body := `{"shop": "shop-a.test", "kind": "test.sleep", "payload": {}, "dedupe_key": "` + key + `"}`
+
+	status, header, first := do(t, srv, http.MethodPost, "/v1/jobs", body)
+	if status != http.StatusCreated || first["duplicate"] != nil {
+		t.Fatalf("first: status %d, body %v; want 201 without duplicate", status, first)
+	}
+	id := int64(first["id"].(float64))
+	for range 3 {
+		status, header, again := do(t, srv, http.MethodPost, "/v1/jobs", body)
+		if status != http.StatusOK || int64(again["id"].(float64)) != id || again["duplicate"] != true {
+			t.Fatalf("repeat: status %d, body %v; want 200 {id: %d, duplicate: true}", status, again, id)
+		}
+		if header.Get("Location") != "/v1/jobs/"+strconv.FormatInt(id, 10) {
+			t.Errorf("repeat: Location = %q", header.Get("Location"))
+		}
+	}
+	if header.Get("Location") != "/v1/jobs/"+strconv.FormatInt(id, 10) {
+		t.Errorf("Location = %q", header.Get("Location"))
+	}
+	if n := countJobs(t, env); n != 1 {
+		t.Errorf("%d jobs, want 1", n)
+	}
+
+	status, _, other := do(t, srv, http.MethodPost, "/v1/jobs",
+		`{"shop": "shop-b.test", "kind": "test.sleep", "payload": {}, "dedupe_key": "`+key+`"}`)
+	if status != http.StatusCreated || int64(other["id"].(float64)) == id {
+		t.Errorf("same key, other shop: status %d, body %v; want a new job", status, other)
+	}
+	if n := countKeys(t, env); n != 2 {
+		t.Errorf("%d dedupe keys, want 2", n)
 	}
 	env.CheckBacklog(t)
 }

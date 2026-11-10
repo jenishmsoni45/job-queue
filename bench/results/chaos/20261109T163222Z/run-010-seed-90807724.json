@@ -1,0 +1,97 @@
+{
+  "seed": 90807724,
+  "started": "2026-11-09T16:36:24.395963886Z",
+  "duration_ms": 28843,
+  "passed": true,
+  "jobs": {
+    "planned": 2000,
+    "accepted": 2000,
+    "enqueue_retries": 0,
+    "duplicates": 0,
+    "completed": 2000,
+    "dead": 0,
+    "not_terminal": 0
+  },
+  "faults": [
+    {
+      "kind": "pause_worker",
+      "target": "worker-2",
+      "at_ms": 492,
+      "duration_ms": 4724,
+      "applied_ms": 493,
+      "reverted_ms": 5274
+    },
+    {
+      "kind": "latency",
+      "target": "pg-worker-1",
+      "at_ms": 19356,
+      "duration_ms": 3797,
+      "stream": "downstream",
+      "attributes": {
+        "jitter": 125,
+        "latency": 221
+      },
+      "applied_ms": 19357,
+      "reverted_ms": 23159
+    },
+    {
+      "kind": "latency",
+      "target": "pg-dispatcher",
+      "at_ms": 25055,
+      "duration_ms": 3736,
+      "stream": "upstream",
+      "attributes": {
+        "jitter": 197,
+        "latency": 276
+      },
+      "applied_ms": 25060,
+      "reverted_ms": 28799
+    },
+    {
+      "kind": "pause_worker",
+      "target": "worker-1",
+      "at_ms": 25369,
+      "duration_ms": 2567,
+      "applied_ms": 25369,
+      "reverted_ms": 28007
+    }
+  ],
+  "samples": {
+    "taken": 28,
+    "skipped": 0,
+    "backlog_mismatched": 0,
+    "connections_seen": 433
+  },
+  "checks": [
+    {
+      "name": "q1_every_accepted_job_completed_or_dead",
+      "passed": true,
+      "detail": "2000 accepted: 2000 completed, 0 dead"
+    },
+    {
+      "name": "q4_one_job_per_dedupe_key",
+      "passed": true,
+      "detail": "2000 keys, 2000 jobs"
+    },
+    {
+      "name": "q3_no_overlapping_leases",
+      "passed": true,
+      "detail": "2008 leases checked"
+    },
+    {
+      "name": "backlog_counter_matches_real_count",
+      "passed": true,
+      "detail": "28 samples during the run and one at the end matched"
+    },
+    {
+      "name": "run_tx_effect_applied_once",
+      "passed": true,
+      "detail": "2000 effects"
+    },
+    {
+      "name": "workers_and_dispatcher_reach_postgres_through_toxiproxy",
+      "passed": true,
+      "detail": "449 connections seen across the run's samples, all through toxiproxy"
+    }
+  ]
+}

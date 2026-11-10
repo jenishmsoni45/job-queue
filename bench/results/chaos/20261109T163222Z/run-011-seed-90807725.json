@@ -1,0 +1,133 @@
+{
+  "seed": 90807725,
+  "started": "2026-11-09T16:36:53.374101885Z",
+  "duration_ms": 30399,
+  "passed": true,
+  "jobs": {
+    "planned": 2000,
+    "accepted": 2000,
+    "enqueue_retries": 0,
+    "duplicates": 0,
+    "completed": 2000,
+    "dead": 0,
+    "not_terminal": 0
+  },
+  "faults": [
+    {
+      "kind": "kill_worker",
+      "target": "worker-2",
+      "at_ms": 3238,
+      "duration_ms": 2914,
+      "applied_ms": 3239,
+      "reverted_ms": 6308
+    },
+    {
+      "kind": "pause_worker",
+      "target": "worker-2",
+      "at_ms": 7990,
+      "duration_ms": 4694,
+      "applied_ms": 7991,
+      "reverted_ms": 12749
+    },
+    {
+      "kind": "pause_worker",
+      "target": "worker-1",
+      "at_ms": 11765,
+      "duration_ms": 3639,
+      "applied_ms": 11765,
+      "reverted_ms": 15461
+    },
+    {
+      "kind": "latency",
+      "target": "pg-worker-2",
+      "at_ms": 14172,
+      "duration_ms": 2692,
+      "stream": "downstream",
+      "attributes": {
+        "jitter": 72,
+        "latency": 1018
+      },
+      "applied_ms": 14172,
+      "reverted_ms": 16869
+    },
+    {
+      "kind": "reset_peer",
+      "target": "pg-dispatcher",
+      "at_ms": 14448,
+      "duration_ms": 664,
+      "stream": "downstream",
+      "attributes": {
+        "timeout": 311
+      },
+      "applied_ms": 14449,
+      "reverted_ms": 15116
+    },
+    {
+      "kind": "latency",
+      "target": "pg-dispatcher",
+      "at_ms": 15524,
+      "duration_ms": 5068,
+      "stream": "upstream",
+      "attributes": {
+        "jitter": 43,
+        "latency": 692
+      },
+      "applied_ms": 15524,
+      "reverted_ms": 20595
+    },
+    {
+      "kind": "pause_worker",
+      "target": "worker-1",
+      "at_ms": 16422,
+      "duration_ms": 4987,
+      "applied_ms": 16425,
+      "reverted_ms": 21470
+    },
+    {
+      "kind": "pause_worker",
+      "target": "worker-2",
+      "at_ms": 22181,
+      "duration_ms": 4327,
+      "applied_ms": 22181,
+      "reverted_ms": 26557
+    }
+  ],
+  "samples": {
+    "taken": 30,
+    "skipped": 0,
+    "backlog_mismatched": 0,
+    "connections_seen": 485
+  },
+  "checks": [
+    {
+      "name": "q1_every_accepted_job_completed_or_dead",
+      "passed": true,
+      "detail": "2000 accepted: 2000 completed, 0 dead"
+    },
+    {
+      "name": "q4_one_job_per_dedupe_key",
+      "passed": true,
+      "detail": "2000 keys, 2000 jobs"
+    },
+    {
+      "name": "q3_no_overlapping_leases",
+      "passed": true,
+      "detail": "2039 leases checked"
+    },
+    {
+      "name": "backlog_counter_matches_real_count",
+      "passed": true,
+      "detail": "30 samples during the run and one at the end matched"
+    },
+    {
+      "name": "run_tx_effect_applied_once",
+      "passed": true,
+      "detail": "2000 effects"
+    },
+    {
+      "name": "workers_and_dispatcher_reach_postgres_through_toxiproxy",
+      "passed": true,
+      "detail": "503 connections seen across the run's samples, all through toxiproxy"
+    }
+  ]
+}

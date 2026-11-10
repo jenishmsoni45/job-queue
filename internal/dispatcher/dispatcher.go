@@ -1,6 +1,7 @@
 // Package dispatcher is the dispatcher role (design §6, §9, D-002): the only
 // process that claims jobs. It holds a leader lock, queues the workers that
-// long-poll it for work, claims jobs for them, and runs the reaper.
+// long-poll it for work, claims jobs for them, and runs the reaper and the
+// pruner.
 //
 // Phase 2 claims in FIFO order (the globally oldest runnable jobs) with no
 // caps, token buckets or DRR; phase 4 adds those. Correctness never depends on
@@ -53,7 +54,13 @@ type Config struct {
 	ReaperBatch    int
 	// StandbyRetry is how often a standby tries for the lock (design §9: 1 s).
 	StandbyRetry time.Duration
-	Log          *slog.Logger
+	// PruneInterval is how often the pruner runs (design §9: every minute),
+	// PruneBatch the most rows one of its deletes removes (5,000), and
+	// Retention how long finished rows are kept (design §2).
+	PruneInterval time.Duration
+	PruneBatch    int
+	Retention     store.Retention
+	Log           *slog.Logger
 }
 
 // Dispatcher is one dispatcher process.
@@ -86,8 +93,12 @@ func New(cfg Config) (*Dispatcher, error) {
 	if cfg.DB == nil || cfg.Connect == nil || cfg.Log == nil {
 		return nil, errors.New("dispatcher: needs DB, Connect and Log")
 	}
-	if cfg.Refresh <= 0 || cfg.LongPoll <= 0 || cfg.ReaperInterval <= 0 || cfg.ReaperBatch <= 0 || cfg.StandbyRetry <= 0 {
-		return nil, errors.New("dispatcher: intervals and the reaper batch must be positive")
+	if cfg.Refresh <= 0 || cfg.LongPoll <= 0 || cfg.ReaperInterval <= 0 || cfg.ReaperBatch <= 0 || cfg.StandbyRetry <= 0 ||
+		cfg.PruneInterval <= 0 || cfg.PruneBatch <= 0 {
+		return nil, errors.New("dispatcher: intervals and batch sizes must be positive")
+	}
+	if err := cfg.Retention.Validate(); err != nil {
+		return nil, fmt.Errorf("dispatcher: %w", err)
 	}
 	return &Dispatcher{cfg: cfg, wake: make(chan struct{}, 1)}, nil
 }
@@ -152,6 +163,7 @@ func (d *Dispatcher) campaign(ctx context.Context, conn *pgx.Conn) bool {
 	var wg sync.WaitGroup
 	wg.Go(func() { d.claimLoop(leaderCtx) })
 	wg.Go(func() { d.reaperLoop(leaderCtx) })
+	wg.Go(func() { d.pruneLoop(leaderCtx) })
 
 	d.watch(leaderCtx, conn)
 
@@ -341,6 +353,30 @@ func (d *Dispatcher) reaperLoop(ctx context.Context) {
 			if r.Requeued+r.Dead < d.cfg.ReaperBatch {
 				break
 			}
+		}
+	}
+}
+
+// pruneLoop deletes finished rows past their retention every PruneInterval
+// (design §9). Like the reaper, it runs only on the leader.
+func (d *Dispatcher) pruneLoop(ctx context.Context) {
+	ticker := time.NewTicker(d.cfg.PruneInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+		r, err := store.Prune(ctx, d.cfg.DB, d.cfg.Retention, d.cfg.PruneBatch)
+		if err != nil {
+			if ctx.Err() == nil {
+				d.cfg.Log.Warn("pruner failed", "err", err.Error())
+			}
+			continue
+		}
+		if r.Completed > 0 || r.Discarded > 0 || r.DedupeKeys > 0 {
+			d.cfg.Log.Info("pruned", "completed", r.Completed, "discarded", r.Discarded, "dedupe_keys", r.DedupeKeys)
 		}
 	}
 }

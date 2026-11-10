@@ -1,0 +1,10 @@
+{
+  "started": "2026-11-09T17:19:57.871520929Z",
+  "lease_ms": 30000,
+  "reaper_scan_ms": 5000,
+  "target_ms": 35000,
+  "killed": "worker-1",
+  "orphans": 4,
+  "recovery_ms": 31183,
+  "passed": true
+}

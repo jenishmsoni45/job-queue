@@ -28,7 +28,21 @@ const (
 	// Hang sleeps payload.ms milliseconds and ignores cancellation, like a
 	// handler stuck in a call with no context.
 	Hang = "test.hang"
+	// Effect waits payload.ms milliseconds, stopping early if cancelled, then
+	// writes one row (job_id, claim_seq) to the test_effects table through
+	// run.Tx(). The row commits only with the fenced completion, so a completed
+	// job has exactly one row and any other job has none (design §18, AC-7.2).
+	// The table must exist: create it with EffectsTableSQL.
+	Effect = "test.effect"
 )
+
+// EffectsTableSQL creates the table the Effect kind writes to. It is test-only
+// and not part of the migrations; chaos runs and tests create it themselves.
+const EffectsTableSQL = `CREATE TABLE IF NOT EXISTS test_effects (
+  job_id     bigint      NOT NULL,
+  claim_seq  int         NOT NULL,
+  applied_at timestamptz NOT NULL DEFAULT statement_timestamp()
+)`
 
 // Payload is the payload every test kind reads. Unused fields are ignored.
 type Payload struct {
@@ -44,6 +58,7 @@ func Register(r *queue.Registry) {
 	r.Register(Fail, fail)
 	r.Register(Panic, panicking)
 	r.Register(Hang, hang)
+	r.Register(Effect, effect)
 }
 
 func decode(run *queue.Run) (Payload, error) {
@@ -106,5 +121,20 @@ func hang(_ context.Context, run *queue.Run) error {
 		return err
 	}
 	time.Sleep(time.Duration(p.MS) * time.Millisecond)
+	return nil
+}
+
+func effect(ctx context.Context, run *queue.Run) error {
+	if err := sleep(ctx, run); err != nil {
+		return err
+	}
+	tx, err := run.Tx(ctx)
+	if err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `INSERT INTO test_effects (job_id, claim_seq) VALUES ($1, $2)`,
+		run.Job.ID, run.Job.ClaimSeq); err != nil {
+		return fmt.Errorf("write the test effect: %w", err)
+	}
 	return nil
 }

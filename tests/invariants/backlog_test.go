@@ -26,7 +26,7 @@ func TestBacklogCounterMatchesRealCount(t *testing.T) {
 
 	rapid.Check(t, func(rt *rapid.T) {
 		ctx := context.Background()
-		if _, err := env.Pool.Exec(ctx, `TRUNCATE jobs; UPDATE shop_state SET backlog = 0`); err != nil {
+		if _, err := env.Pool.Exec(ctx, `TRUNCATE jobs, idempotency_keys; UPDATE shop_state SET backlog = 0`); err != nil {
 			rt.Fatal(err)
 		}
 		var held, over []store.Fence // live claims; claims that have ended

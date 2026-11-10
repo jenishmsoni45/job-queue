@@ -46,6 +46,9 @@ func start(t *testing.T, env *queuetest.Env, name string, edit func(*dispatcher.
 		ReaperInterval: 100 * time.Millisecond,
 		ReaperBatch:    500,
 		StandbyRetry:   100 * time.Millisecond,
+		PruneInterval:  time.Hour,
+		PruneBatch:     5000,
+		Retention:      queuetest.Retention,
 		Log:            queuetest.Logger(t),
 	}
 	if edit != nil {
@@ -292,6 +295,39 @@ func TestReaperRequeuesExpiredLeases(t *testing.T) {
 	}
 	if j := env.Job(t, id); *j.LastError != "lease expired" {
 		t.Errorf("last_error = %v", j.LastError)
+	}
+}
+
+// Design §9: the leader runs the pruner every PruneInterval. A completed job
+// past its retention goes; a young one stays.
+func TestLeaderRunsThePruner(t *testing.T) {
+	t.Parallel()
+	env := queuetest.New(t, nil)
+	old := env.Enqueue(t, shopA, testkinds.Sleep, nil)
+	young := env.Enqueue(t, shopA, testkinds.Sleep, nil)
+	for _, id := range []int64{old, young} {
+		jobs, err := store.Claim(t.Context(), env.Pool, []string{"w"})
+		if err != nil || len(jobs) != 1 {
+			t.Fatalf("claim = %v, %v", jobs, err)
+		}
+		if ok, err := store.Complete(t.Context(), env.Pool, jobs[0].Fence()); err != nil || !ok {
+			t.Fatalf("complete job %d = %v, %v", id, ok, err)
+		}
+	}
+	if _, err := env.Pool.Exec(t.Context(), `UPDATE jobs SET completed_at = now() - interval '2 hours' WHERE id = $1`, old); err != nil {
+		t.Fatal(err)
+	}
+	r := start(t, env, "pruner", func(c *dispatcher.Config) {
+		c.PruneInterval = 50 * time.Millisecond
+		c.Retention.Completed = time.Hour
+	})
+	waitLeader(t, r)
+	queuetest.Eventually(t, 5*time.Second, "the pruner to delete the old job", func() bool {
+		_, err := store.GetJob(t.Context(), env.Pool, old)
+		return errors.Is(err, store.ErrNotFound)
+	})
+	if _, err := store.GetJob(t.Context(), env.Pool, young); err != nil {
+		t.Errorf("the young completed job was pruned: %v", err)
 	}
 }
 
