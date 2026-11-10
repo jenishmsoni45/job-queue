@@ -101,6 +101,10 @@ services:
   dispatcher:
     <<: *app
     command: ["dispatcher"]
+    environment:
+      <<: *pg-client-env
+      # drr (weighted deficit round robin) or fifo, the experiment's baseline (AC-9.3).
+      QUEUED_SCHEDULER: ${QUEUED_SCHEDULER:-drr}
     volumes: *queued-config
     restart: always
     healthcheck: *app-healthcheck
