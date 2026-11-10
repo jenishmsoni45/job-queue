@@ -2,20 +2,25 @@ package invariants
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"testing"
 	"time"
 
 	"pgregory.net/rapid"
 
+	"github.com/jenishmsoni45/job-queue/internal/admission"
 	"github.com/jenishmsoni45/job-queue/internal/queuetest"
 	"github.com/jenishmsoni45/job-queue/internal/store"
 	"github.com/jenishmsoni45/job-queue/internal/testkinds"
 )
 
-// P2-9: after any sequence of enqueues, claims, results (complete, fail,
-// permanent), expiries, reaper passes and stale writes, each shop's backlog
-// counter equals its real number of queued and running jobs (design §3).
+// P2-9, P4-8: after any sequence of enqueues, batch enqueues, rejections at the
+// backlog limit, claims, results (complete, fail, permanent), expiries, reaper
+// passes and stale writes, each shop's backlog counter equals its real number of
+// queued and running jobs (design §3). Every admission decision is exact: an
+// enqueue is rejected exactly when its new jobs would pass the limit, and shed_total
+// counts exactly the jobs rejected.
 func TestBacklogCounterMatchesRealCount(t *testing.T) {
 	t.Parallel()
 	// Long leases: the test expires leases itself, by moving lease_expires_at
@@ -26,8 +31,49 @@ func TestBacklogCounterMatchesRealCount(t *testing.T) {
 
 	rapid.Check(t, func(rt *rapid.T) {
 		ctx := context.Background()
-		if _, err := env.Pool.Exec(ctx, `TRUNCATE jobs, idempotency_keys; UPDATE shop_state SET backlog = 0`); err != nil {
+		limit := rapid.IntRange(1, 7).Draw(rt, "backlog limit")
+		if _, err := env.Pool.Exec(ctx, `TRUNCATE jobs, idempotency_keys, dedupe_keys; UPDATE shop_state SET backlog = 0, shed_total = 0`); err != nil {
 			rt.Fatal(err)
+		}
+		if _, err := env.Pool.Exec(ctx, `UPDATE shops SET backlog_limit = $1`, limit); err != nil {
+			rt.Fatal(err)
+		}
+		shed := map[string]int{} // jobs rejected, per shop, by this test's own count
+		backlogOf := func(shop string) int {
+			var n int
+			if err := env.Pool.QueryRow(ctx, `SELECT count(*) FROM jobs WHERE shop_id = $1 AND state IN ('queued', 'running')`, shop).Scan(&n); err != nil {
+				rt.Fatal(err)
+			}
+			return n
+		}
+		// admit checks one enqueue's outcome against the limit, exactly. newJobs
+		// is how many jobs it would create.
+		admit := func(shop string, before, newJobs int, err error) {
+			var rej *admission.Rejected
+			switch {
+			case errors.As(err, &rej):
+				if before+newJobs <= limit {
+					rt.Fatalf("shop %s: %d new jobs rejected with a backlog of %d under a limit of %d", shop, newJobs, before, limit)
+				}
+				if rej.Shed != newJobs {
+					rt.Fatalf("shop %s: rejection says %d shed, want %d", shop, rej.Shed, newJobs)
+				}
+				shed[shop] += newJobs
+				if after := backlogOf(shop); after != before {
+					rt.Fatalf("shop %s: a rejected enqueue changed the backlog from %d to %d", shop, before, after)
+				}
+			case err != nil:
+				rt.Fatal(err)
+			case before+newJobs > limit:
+				rt.Fatalf("shop %s: %d new jobs accepted with a backlog of %d under a limit of %d", shop, newJobs, before, limit)
+			}
+		}
+		keyExists := func(shop, key string) bool {
+			var n int
+			if err := env.Pool.QueryRow(ctx, `SELECT count(*) FROM dedupe_keys WHERE shop_id = $1 AND key = $2`, shop, key).Scan(&n); err != nil {
+				rt.Fatal(err)
+			}
+			return n > 0
 		}
 		var held, over []store.Fence // live claims; claims that have ended
 		owners := 0
@@ -48,8 +94,40 @@ func TestBacklogCounterMatchesRealCount(t *testing.T) {
 					at := time.Now().Add(time.Hour)
 					job.RunAt = &at
 				}
-				if _, err := store.Enqueue(ctx, env.Pool, job); err != nil {
-					rt.Fatal(err)
+				newJobs := 1
+				if rapid.Bool().Draw(rt, "with a dedupe key") {
+					job.DedupeKey = rapid.SampledFrom([]string{"k0", "k1", "k2", "k3"}).Draw(rt, "key")
+					if keyExists(job.Shop, job.DedupeKey) {
+						newJobs = 0 // a duplicate: answered with the existing job, never rejected
+					}
+				}
+				before := backlogOf(job.Shop)
+				_, err := store.Enqueue(ctx, env.Pool, job)
+				admit(job.Shop, before, newJobs, err)
+			},
+			"batch": func(rt *rapid.T) {
+				shop := rapid.SampledFrom(shops).Draw(rt, "shop")
+				size := rapid.IntRange(1, 5).Draw(rt, "batch size")
+				keys := rapid.SliceOfNDistinct(rapid.SampledFrom([]string{"k0", "k1", "k2", "k3", "k4", ""}), 0, size, func(k string) string { return k }).Draw(rt, "keys")
+				// One job per key, and keyless jobs to make up the size.
+				jobs := make([]store.NewJob, 0, size)
+				newJobs := 0
+				for _, k := range keys {
+					jobs = append(jobs, store.NewJob{Shop: shop, Kind: testkinds.Sleep, Payload: []byte(`{}`), DedupeKey: k})
+				}
+				for len(jobs) < size {
+					jobs = append(jobs, store.NewJob{Shop: shop, Kind: testkinds.Sleep, Payload: []byte(`{}`)})
+				}
+				for _, j := range jobs {
+					if j.DedupeKey == "" || !keyExists(shop, j.DedupeKey) {
+						newJobs++
+					}
+				}
+				before := backlogOf(shop)
+				res, err := store.EnqueueBatch(ctx, env.Pool, jobs)
+				admit(shop, before, newJobs, err)
+				if err == nil && res.Created != newJobs {
+					rt.Fatalf("batch created %d jobs, want %d", res.Created, newJobs)
 				}
 			},
 			"claim": func(rt *rapid.T) {
@@ -128,7 +206,8 @@ func TestBacklogCounterMatchesRealCount(t *testing.T) {
 			"": func(rt *rapid.T) {
 				rows, err := env.Pool.Query(ctx, `
 					SELECT s.shop_id, s.backlog,
-					       (SELECT count(*) FROM jobs j WHERE j.shop_id = s.shop_id AND j.state IN ('queued', 'running'))
+					       (SELECT count(*) FROM jobs j WHERE j.shop_id = s.shop_id AND j.state IN ('queued', 'running')),
+					       s.shed_total
 					  FROM shop_state s`)
 				if err != nil {
 					rt.Fatal(err)
@@ -136,12 +215,18 @@ func TestBacklogCounterMatchesRealCount(t *testing.T) {
 				defer rows.Close()
 				for rows.Next() {
 					var shop string
-					var counter, actual int
-					if err := rows.Scan(&shop, &counter, &actual); err != nil {
+					var counter, actual, shedTotal int
+					if err := rows.Scan(&shop, &counter, &actual, &shedTotal); err != nil {
 						rt.Fatal(err)
 					}
 					if counter != actual {
 						rt.Fatalf("shop %s: backlog counter %d, real queued+running %d", shop, counter, actual)
+					}
+					if counter > limit {
+						rt.Fatalf("shop %s: backlog %d is over the limit of %d", shop, counter, limit)
+					}
+					if shedTotal != shed[shop] {
+						rt.Fatalf("shop %s: shed_total %d, but this test saw %d jobs rejected", shop, shedTotal, shed[shop])
 					}
 				}
 				if err := rows.Err(); err != nil {
