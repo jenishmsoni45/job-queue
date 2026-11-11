@@ -167,6 +167,87 @@ func TestPermanentGoesDead(t *testing.T) {
 	}
 }
 
+// AC-6.1, Q7 in the worker: a Throttled result rolls back the run's effects,
+// requeues the job after the wait plus at most 10% jitter, and uses no attempt;
+// the next run sees attempts still 0. Throttled wraps through errors.As.
+func TestThrottledRequeuesWithoutAnAttempt(t *testing.T) {
+	t.Parallel()
+	env := newEnv(t, 1000, 200, 10_000, 5)
+	createEffects(t, env)
+	var runs atomic.Int32
+	_, reports := env.StartWorker(t, registry(func(ctx context.Context, run *queue.Run) error {
+		if run.Job.Attempts != 0 {
+			return queue.Permanent(fmt.Errorf("run %d saw attempts %d", runs.Load(), run.Job.Attempts))
+		}
+		if runs.Add(1) <= 2 {
+			if err := writeEffect(ctx, run); err != nil {
+				return err
+			}
+			return fmt.Errorf("tagging: %w", queue.Throttled(100*time.Millisecond))
+		}
+		return writeEffect(ctx, run)
+	}))
+	id := env.Enqueue(t, shopA, kind, nil)
+	for i := range 2 {
+		rep := reports.Next(t, 10*time.Second)
+		if rep.Outcome != queue.OutcomeThrottled || rep.Backoff < 100*time.Millisecond || rep.Backoff >= 110*time.Millisecond {
+			t.Fatalf("run %d: report %+v, want throttled with a wait in [100ms, 110ms)", i+1, rep)
+		}
+	}
+	if rep := reports.Next(t, 10*time.Second); rep.Outcome != queue.OutcomeCompleted {
+		t.Fatalf("third run: %+v, want completed", rep)
+	}
+	j := env.Job(t, id)
+	if j.State != store.StateCompleted || j.Attempts != 0 || j.Throttles != 2 || j.ClaimSeq != 3 {
+		t.Errorf("job = state %s, attempts %d, throttles %d, claim_seq %d", j.State, j.Attempts, j.Throttles, j.ClaimSeq)
+	}
+	if n := effects(t, env, id); n != 1 {
+		t.Errorf("%d effects, want 1: a throttled run's run.Tx() effects roll back", n)
+	}
+	env.CheckBacklog(t)
+}
+
+// AC-6.3 in the worker: past the throttle budget the job goes dead.
+func TestThrottleBudgetExhaustedGoesDead(t *testing.T) {
+	t.Parallel()
+	env := queuetest.New(t, queuetest.Config(t, queuetest.WithKind(kind, func(k *config.Kind) {
+		k.LeaseMS, k.HeartbeatMS, k.MaxThrottles = 1000, 200, 1
+	})))
+	_, reports := env.StartWorker(t, registry(func(context.Context, *queue.Run) error {
+		return queue.Throttled(10 * time.Millisecond)
+	}))
+	id := env.Enqueue(t, shopA, kind, nil)
+	if rep := reports.Next(t, 10*time.Second); rep.Outcome != queue.OutcomeThrottled {
+		t.Fatalf("first run: %+v", rep)
+	}
+	if rep := reports.Next(t, 10*time.Second); rep.Outcome != queue.OutcomeDead {
+		t.Fatalf("second run: %+v, want dead", rep)
+	}
+	j := env.Job(t, id)
+	if j.State != store.StateDead || *j.DeadReason != store.ReasonThrottleBudget || j.Attempts != 0 || j.Throttles != 2 {
+		t.Errorf("job = state %s, reason %v, attempts %d, throttles %d", j.State, j.DeadReason, j.Attempts, j.Throttles)
+	}
+	env.CheckBacklog(t)
+}
+
+func TestThrottledHelpers(t *testing.T) {
+	t.Parallel()
+	if d, ok := queue.IsThrottled(queue.Throttled(-time.Second)); !ok || d != 0 {
+		t.Errorf("negative wait: %v, %v; want 0, true", d, ok)
+	}
+	if _, ok := queue.IsThrottled(errors.New("x")); ok {
+		t.Error("a plain error is not a throttle")
+	}
+	for range 100 {
+		if j := queue.ThrottleJitter(time.Second); j < 0 || j >= 100*time.Millisecond {
+			t.Fatalf("jitter %v outside [0, 100ms)", j)
+		}
+	}
+	if j := queue.ThrottleJitter(5 * time.Nanosecond); j != 0 {
+		t.Errorf("jitter of a tiny wait = %v, want 0", j)
+	}
+}
+
 // Design §8: a panic is recovered, stored in last_error with its stack, and
 // counts as a temporary failure. The worker keeps going.
 func TestPanicIsRecovered(t *testing.T) {

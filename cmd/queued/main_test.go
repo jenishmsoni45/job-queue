@@ -26,7 +26,7 @@ import (
 
 const (
 	testConfig = "../../tests/testdata/shops.json"
-	testSecret = "test-webhook-secret"
+	testSecret = "test-webhook-secret" //nolint:gosec // a dummy test secret, not a credential
 )
 
 // freeAddr returns a loopback address with a port that was free a moment ago.

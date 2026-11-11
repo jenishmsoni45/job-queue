@@ -357,7 +357,7 @@ func (e *Env) WaitState(t testing.TB, id int64, state string, timeout time.Durat
 }
 
 // WebhookSecret is the HMAC secret test api servers check webhooks with.
-const WebhookSecret = "test-webhook-secret"
+const WebhookSecret = "test-webhook-secret" //nolint:gosec // a dummy test secret, not a credential
 
 // Webhook is one webhook delivery for PostWebhook. Zero fields get defaults:
 // a valid signature over Body, the orders/create topic, and a body for order 1.
