@@ -3,14 +3,10 @@ package adversarial
 import (
 	"context"
 	"fmt"
-	"net/http"
-	"net/http/httptest"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
-
-	"github.com/jackc/pgx/v5"
 
 	"github.com/jenishmsoni45/job-queue/internal/config"
 	"github.com/jenishmsoni45/job-queue/internal/dispatcher"
@@ -20,50 +16,11 @@ import (
 	"github.com/jenishmsoni45/job-queue/internal/testkinds"
 )
 
-// startLeader runs a dispatcher that is the leader, whatever other dispatchers
-// there are: it holds a lock of its own name, which is what a split brain looks
-// like to the claim SQL (design §14: "two dispatchers at once").
+// startLeader runs a dispatcher that leads alongside any other (design §14:
+// "two dispatchers at once").
 func startLeader(t *testing.T, env *queuetest.Env, name string, mode scheduler.Mode) *dispatcher.Client {
 	t.Helper()
-	d, err := dispatcher.New(dispatcher.Config{
-		DB: env.Pool,
-		Connect: func(ctx context.Context) (*pgx.Conn, error) {
-			c := env.DB.ConnConfig()
-			c.RuntimeParams["application_name"] = "adversarial-" + name
-			return pgx.ConnectConfig(ctx, c)
-		},
-		Scheduler:      mode,
-		Quantum:        int64(env.Config.MaxCost()),
-		LockName:       dispatcher.LeaderLockName + ":" + name,
-		Refresh:        20 * time.Millisecond,
-		LongPoll:       time.Second,
-		ReaperInterval: time.Hour,
-		ReaperBatch:    500,
-		StandbyRetry:   50 * time.Millisecond,
-		PruneInterval:  time.Hour,
-		PruneBatch:     5000,
-		Retention:      queuetest.Retention,
-		Log:            queuetest.Logger(t),
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		_ = d.Run(ctx)
-	}()
-	mux := http.NewServeMux()
-	mux.Handle("POST "+dispatcher.ClaimPath, d)
-	srv := httptest.NewServer(mux)
-	t.Cleanup(func() {
-		cancel()
-		<-done
-		srv.Close()
-	})
-	queuetest.Eventually(t, 5*time.Second, name+" to lead", d.IsLeader)
-	return &dispatcher.Client{URL: srv.URL, HTTP: srv.Client()}
+	return env.StartDispatcher(t, name, mode)
 }
 
 // P4-1, Q5 and Q3 with two dispatchers (design §14, §16): both dispatchers lead
