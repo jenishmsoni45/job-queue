@@ -50,6 +50,7 @@ func TestQ1BasicNoAcceptedJobIsLost(t *testing.T) {
 		Connect: func(ctx context.Context) (*pgx.Conn, error) {
 			return pgx.ConnectConfig(ctx, env.DB.ConnConfig())
 		},
+		Quantum: int64(env.Config.MaxCost()),
 		Refresh: 50 * time.Millisecond, LongPoll: time.Second, ReaperInterval: 50 * time.Millisecond,
 		ReaperBatch: 500, StandbyRetry: 100 * time.Millisecond,
 		PruneInterval: time.Hour, PruneBatch: 5000, Retention: queuetest.Retention, Log: queuetest.Logger(t),

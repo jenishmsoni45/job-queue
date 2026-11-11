@@ -174,3 +174,13 @@ func (c *File) MinHeartbeat() time.Duration {
 	}
 	return time.Duration(minMS) * time.Millisecond
 }
+
+// MaxCost returns the largest job cost of any kind. It is the DRR base quantum
+// (design §2): with it, a shop's first job always fits in the first turn it gets.
+func (c *File) MaxCost() int {
+	m := 1
+	for _, k := range c.Kinds {
+		m = max(m, k.Cost)
+	}
+	return m
+}

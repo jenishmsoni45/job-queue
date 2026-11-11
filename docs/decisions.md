@@ -53,6 +53,8 @@ Each entry gives the question, the options considered, the decision and its cons
 | D-045 | What makes a dedupe key valid | Phase 3: follows D-039 | Decided |
 | D-046 | Which seeds `make chaos` uses | Phase 3: gap in D-023 | Decided |
 | D-047 | The row lock claims and the reaper take | Phase 3: found by the AC-7.1 test | Decided |
+| D-048 | What a batch enqueue returns | Phase 4: gap in design §11.1 | Decided |
+| D-049 | What a rejected batch adds to `shed_total` | Phase 4: gap in design §5.2 | Decided |
 
 ---
 
@@ -712,3 +714,24 @@ Each entry gives the question, the options considered, the decision and its cons
 - **Why not B:** a step could be recorded for a job that doesn't exist, and claims would still clash with any other table that references `jobs`, such as a handler's own effects in `run.Tx()`.
 - **Why not C:** the risk to Q1 and NFR-10 would stay.
 - **Consequences:** store tests hold a step's transaction open and check that the reaper still requeues the job and a claim still takes it.
+
+## D-048 · What a batch enqueue returns
+
+- **Date:** 2026-11-10 · **Phase:** 4 · **Source:** Gap. Design §11.1 says `201 {ids, duplicates}` and AC-2.3 says duplicates are "returned with their existing IDs", but neither says what `duplicates` holds, what the status is when every job is a duplicate, or what an empty batch gets.
+- **Options:**
+  - A. `ids` has one ID per request job, in request order. `duplicates` lists the IDs that already existed. The status is 201 if at least one job was created and 200 if every job was a duplicate. An empty `jobs` array is 422.
+  - B. Like A, but `duplicates` holds request positions instead of IDs.
+  - C. Like A, but the status is always 201.
+- **Decision:** A (the user's choice). Design §11.1 now says so (approved by the user).
+- **Why not B:** a position says which request job was a duplicate, but the single-job answer already reports the existing ID, and A keeps the two alike.
+- **Why not C:** a retried batch that created nothing would look like a fresh create, unlike a single enqueue, which answers 200.
+
+## D-049 · What a rejected batch adds to `shed_total`
+
+- **Date:** 2026-11-10 · **Phase:** 4 · **Source:** Gap. AC-11.3 counts "every job rejected with 429", and design §5.1 shows `shed_total + 1` for a single enqueue. Design §5.2 doesn't say what a batch adds.
+- **Options:**
+  - A. The number of new jobs in the batch: its size minus the jobs whose dedupe key already exists.
+  - B. The whole batch size, duplicates included.
+- **Decision:** A (the user's choice). A rejected single enqueue adds 1.
+- **Why not B:** it counts jobs that admission never refused. Duplicates don't count toward the limit (AC-2.3), so they are not shed either.
+- **Consequences:** a rejected batch still reads its existing dedupe keys before it takes the shop row lock, as an accepted one does. `shed_total` is written in the same transaction as the check, under the lock.

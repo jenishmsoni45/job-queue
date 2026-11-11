@@ -19,6 +19,7 @@ import (
 
 	"github.com/jenishmsoni45/job-queue/internal/httpserver"
 	"github.com/jenishmsoni45/job-queue/internal/pgtest"
+	"github.com/jenishmsoni45/job-queue/internal/scheduler"
 	"github.com/jenishmsoni45/job-queue/migrations"
 )
 
@@ -264,6 +265,20 @@ func TestPruneSettings(t *testing.T) {
 	}
 	if _, err := loadSettings(env(map[string]string{"QUEUED_DEDUPE_WINDOW_MS": "0"})); err == nil {
 		t.Error("a zero dedupe window was accepted")
+	}
+}
+
+// P4-5, AC-9.3: the scheduler is one environment setting, DRR unless it says
+// FIFO, and a name that is neither fails fast.
+func TestSchedulerSetting(t *testing.T) {
+	for value, want := range map[string]scheduler.Mode{"": scheduler.ModeDRR, "drr": scheduler.ModeDRR, "fifo": scheduler.ModeFIFO} {
+		s, err := loadSettings(env(map[string]string{"QUEUED_SCHEDULER": value}))
+		if err != nil || s.scheduler != want {
+			t.Errorf("QUEUED_SCHEDULER=%q: scheduler %q, err %v; want %q", value, s.scheduler, err, want)
+		}
+	}
+	if _, err := loadSettings(env(map[string]string{"QUEUED_SCHEDULER": "lifo"})); err == nil {
+		t.Error("an unknown scheduler was accepted")
 	}
 }
 

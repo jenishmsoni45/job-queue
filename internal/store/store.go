@@ -1,6 +1,7 @@
 // Package store holds the Postgres queries for jobs and shop state (design §3,
-// §5–§9): seeding from config, enqueue with dedupe, the claim transaction,
-// heartbeats, the fenced result writes, the reaper and the pruner.
+// §5–§9): seeding from config, enqueue with dedupe and admission (single and
+// batch), the claim transaction with its cap step, heartbeats, the fenced result
+// writes, the reaper and the pruner.
 //
 // Every lease, claim and fencing time comes from the database clock, read with
 // statement_timestamp() (D-036). now() is frozen at the start of a transaction,
@@ -23,6 +24,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
+	"github.com/jenishmsoni45/job-queue/internal/admission"
 	"github.com/jenishmsoni45/job-queue/internal/config"
 )
 
@@ -135,8 +137,13 @@ var errKeyTaken = errors.New("store: dedupe key taken by a concurrent enqueue")
 const maxKeyRetries = 3
 
 // Enqueue inserts one queued job and adds it to the shop's backlog, in one
-// transaction (design §5.1, without admission, which phase 4 adds). It
-// notifies the dispatcher at commit. On any error nothing is created.
+// transaction (design §5.1). It notifies the dispatcher at commit. On any error
+// nothing is created.
+//
+// If the job would take the shop past its backlog limit, nothing is created and
+// the error is an *admission.Rejected (Q8). The shop's shed count goes up in the
+// same transaction that found the shop full, so the rejection is counted exactly
+// once and survives the error return.
 //
 // With a dedupe key, a key the shop already has returns that job as a
 // duplicate, and creates nothing (D-018). Two enqueues with the same new key
@@ -161,6 +168,7 @@ func Enqueue(ctx context.Context, db DB, j NewJob) (Enqueued, error) {
 }
 
 func enqueueOnce(ctx context.Context, db DB, j NewJob) (res Enqueued, err error) {
+	var rej *admission.Rejected
 	err = pgx.BeginFunc(ctx, db, func(tx pgx.Tx) error {
 		var cost int32
 		if err := tx.QueryRow(ctx, `SELECT cost FROM job_kinds WHERE kind = $1`, j.Kind).Scan(&cost); err != nil {
@@ -169,9 +177,8 @@ func enqueueOnce(ctx context.Context, db DB, j NewJob) (res Enqueued, err error)
 			}
 			return fmt.Errorf("store: read job kind: %w", err)
 		}
-		// Dedupe runs before the shop lock (and, from phase 4, admission), so a
-		// duplicate never waits on the hot row and gets 200 even at the backlog
-		// limit (D-018).
+		// Dedupe runs before the shop lock and admission, so a duplicate never
+		// waits on the hot row and gets 200 even at the backlog limit (D-018).
 		if j.DedupeKey != "" {
 			id, found, err := lookupKey(ctx, tx, j.Shop, j.DedupeKey)
 			if err != nil {
@@ -182,14 +189,13 @@ func enqueueOnce(ctx context.Context, db DB, j NewJob) (res Enqueued, err error)
 				return nil
 			}
 		}
-		var backlog int32
-		if err := tx.QueryRow(ctx,
-			`SELECT backlog FROM shop_state WHERE shop_id = $1 FOR UPDATE`, j.Shop,
-		).Scan(&backlog); err != nil {
-			if errors.Is(err, pgx.ErrNoRows) {
-				return ErrUnknownShop
-			}
-			return fmt.Errorf("store: lock shop_state: %w", err)
+		limits, err := lockShop(ctx, tx, j.Shop)
+		if err != nil {
+			return err
+		}
+		if !admission.Fits(limits.backlog, limits.limit, 1) {
+			rej, err = shed(ctx, tx, j.Shop, 1, limits)
+			return err // nil: commit the shed count, then report the rejection
 		}
 		// enqueued_at defaults to now(), the transaction's start, and run_at and
 		// first_runnable_at use the same instant, so a job enqueued without run_at
@@ -234,7 +240,49 @@ func enqueueOnce(ctx context.Context, db DB, j NewJob) (res Enqueued, err error)
 	if err != nil {
 		return Enqueued{}, err
 	}
+	if rej != nil {
+		return Enqueued{}, rej
+	}
 	return res, nil
+}
+
+// shopLimits is a shop's backlog and the limit on it, read under the shop's row lock.
+type shopLimits struct {
+	backlog    int
+	limit      int
+	retryAfter time.Duration
+}
+
+// lockShop takes the shop's shop_state row lock, which serializes the shop's
+// enqueues (design §5.1), and reads its backlog and limit. A shop that isn't in
+// the table is ErrUnknownShop.
+func lockShop(ctx context.Context, tx pgx.Tx, shop string) (shopLimits, error) {
+	var backlog, limit, retryMS int32
+	err := tx.QueryRow(ctx, `
+		SELECT st.backlog, sh.backlog_limit, sh.backlog_retry_after_ms
+		  FROM shop_state st JOIN shops sh ON sh.id = st.shop_id
+		 WHERE st.shop_id = $1
+		   FOR UPDATE OF st`, shop).Scan(&backlog, &limit, &retryMS)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return shopLimits{}, ErrUnknownShop
+	}
+	if err != nil {
+		return shopLimits{}, fmt.Errorf("store: lock shop_state: %w", err)
+	}
+	return shopLimits{
+		backlog: int(backlog), limit: int(limit),
+		retryAfter: time.Duration(retryMS) * time.Millisecond,
+	}, nil
+}
+
+// shed counts n rejected jobs against the shop, in the transaction that holds
+// its lock and found it full (design §5.1, AC-11.3). The caller commits, so the
+// count is kept, and returns the rejection.
+func shed(ctx context.Context, tx pgx.Tx, shop string, n int, l shopLimits) (*admission.Rejected, error) {
+	if _, err := tx.Exec(ctx, `UPDATE shop_state SET shed_total = shed_total + $2 WHERE shop_id = $1`, shop, n); err != nil {
+		return nil, fmt.Errorf("store: count shed jobs: %w", err)
+	}
+	return &admission.Rejected{Shop: shop, Shed: n, RetryAfter: l.retryAfter}, nil
 }
 
 // lookupKey returns the job the shop's dedupe key points to, if the key exists.
@@ -314,80 +362,6 @@ type Claimed struct {
 
 // Fence identifies one run of a job: the claim it holds (D-004).
 func (c Claimed) Fence() Fence { return Fence{JobID: c.ID, ClaimSeq: c.ClaimSeq, Owner: c.Owner} }
-
-// Claim claims up to len(owners) runnable jobs, oldest first by (run_at, id),
-// and gives the i-th claimed job to owners[i] (design §6.3). This is the FIFO
-// claim without the cap step, which phase 4 adds between the two statements.
-//
-// FOR NO KEY UPDATE SKIP LOCKED means concurrent claimers never wait on each
-// other and never take the same row, and the state check means only a queued
-// job can be claimed, so a job has at most one live lease (Q3). It is not FOR
-// UPDATE, which would also skip a job whose row a foreign key has locked FOR
-// KEY SHARE, such as one with a run.Step transaction open (D-047).
-func Claim(ctx context.Context, db DB, owners []string) ([]Claimed, error) {
-	if len(owners) == 0 {
-		return nil, nil
-	}
-	var claimed []Claimed
-	err := pgx.BeginFunc(ctx, db, func(tx pgx.Tx) error {
-		rows, err := tx.Query(ctx, `
-			SELECT id FROM jobs
-			 WHERE state = 'queued' AND run_at <= statement_timestamp()
-			 ORDER BY run_at, id
-			 LIMIT $1
-			 FOR NO KEY UPDATE SKIP LOCKED`, len(owners))
-		if err != nil {
-			return fmt.Errorf("store: claim candidates: %w", err)
-		}
-		ids, err := pgx.CollectRows(rows, pgx.RowTo[int64])
-		if err != nil {
-			return fmt.Errorf("store: claim candidates: %w", err)
-		}
-		if len(ids) == 0 {
-			return nil
-		}
-		rows, err = tx.Query(ctx, `
-			UPDATE jobs j
-			   SET state = 'running', claim_seq = j.claim_seq + 1, lease_owner = c.owner,
-			       lease_expires_at = statement_timestamp() + k.lease_ms * interval '1 millisecond',
-			       first_claimed_at = coalesce(j.first_claimed_at, statement_timestamp())
-			  FROM unnest($1::bigint[], $2::text[]) AS c (id, owner), job_kinds k
-			 WHERE j.id = c.id AND k.kind = j.kind AND j.state = 'queued'
-			RETURNING j.id, j.shop_id, j.kind, j.payload, j.claim_seq, j.attempts, j.lease_owner,
-			          k.lease_ms, k.heartbeat_ms, k.timeout_ms, statement_timestamp(), j.lease_expires_at`,
-			ids, owners[:len(ids)])
-		if err != nil {
-			return fmt.Errorf("store: claim: %w", err)
-		}
-		updated, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (Claimed, error) {
-			var c Claimed
-			err := row.Scan(&c.ID, &c.Shop, &c.Kind, &c.Payload, &c.ClaimSeq, &c.Attempts, &c.Owner,
-				&c.LeaseMS, &c.HeartbeatMS, &c.TimeoutMS, &c.ClaimedAt, &c.LeaseExpiresAt)
-			return c, err
-		})
-		if err != nil {
-			return fmt.Errorf("store: claim: %w", err)
-		}
-		byID := make(map[int64]Claimed, len(updated))
-		for _, c := range updated {
-			byID[c.ID] = c
-		}
-		if len(byID) != len(ids) {
-			// Every candidate is locked by this transaction and was queued, so this
-			// would mean a broken invariant. Roll back rather than hand out half a claim.
-			return fmt.Errorf("store: claim updated %d of %d locked candidates", len(byID), len(ids))
-		}
-		claimed = claimed[:0]
-		for _, id := range ids {
-			claimed = append(claimed, byID[id])
-		}
-		return nil
-	})
-	if err != nil {
-		return nil, err
-	}
-	return claimed, nil
-}
 
 // Fence identifies the claim a result is written under (D-004). A fenced write
 // applies only while the job is running with this claim_seq and owner and its

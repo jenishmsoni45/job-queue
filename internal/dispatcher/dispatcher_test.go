@@ -41,6 +41,7 @@ func start(t *testing.T, env *queuetest.Env, name string, edit func(*dispatcher.
 			c.RuntimeParams["application_name"] = app
 			return pgx.ConnectConfig(ctx, c)
 		},
+		Quantum:        int64(env.Config.MaxCost()),
 		Refresh:        250 * time.Millisecond,
 		LongPoll:       5 * time.Second,
 		ReaperInterval: 100 * time.Millisecond,

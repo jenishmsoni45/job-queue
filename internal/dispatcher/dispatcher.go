@@ -3,10 +3,13 @@
 // long-poll it for work, claims jobs for them, and runs the reaper and the
 // pruner.
 //
-// Phase 2 claims in FIFO order (the globally oldest runnable jobs) with no
-// caps, token buckets or DRR; phase 4 adds those. Correctness never depends on
-// there being one leader: the claim SQL keeps one live lease per job (Q3) even
-// if two dispatchers claim at once during a split brain.
+// The leader picks which shop to claim for with a scheduler, weighted deficit
+// round robin or FIFO (design §6.2), from an in-memory view of the shops that is
+// refreshed from Postgres before each round of claims (design §6.1): their
+// concurrency caps, token buckets and throttles. Correctness never depends on
+// there being one leader: the claim SQL keeps one live lease per job (Q3) and
+// one shop's running jobs under its cap (Q5) even if two dispatchers claim at
+// once during a split brain.
 package dispatcher
 
 import (
@@ -23,11 +26,17 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/jenishmsoni45/job-queue/internal/scheduler"
 	"github.com/jenishmsoni45/job-queue/internal/store"
 )
 
 // LeaderLockName names the session advisory lock the leader holds (design §9).
 const LeaderLockName = "queued:dispatcher"
+
+// maxClaimRoundsPerWake bounds the claims one wake makes beyond one per waiting
+// worker and shop, so a scheduler that kept offering shops that serve nothing
+// could not spin.
+const maxClaimRoundsPerWake = 4
 
 // ClaimPath is the long-poll endpoint workers call (design §11.2).
 const ClaimPath = "/internal/v1/claim"
@@ -44,8 +53,21 @@ type Config struct {
 	Connect func(ctx context.Context) (*pgx.Conn, error)
 	// Refresh is how often the dispatcher retries a claim for waiting workers
 	// when no notification arrived (design §2: 250 ms). A scheduled job becomes
-	// claimable within one refresh of its run_at (AC-3.2).
+	// claimable within one refresh of its run_at (AC-3.2). Every attempt starts
+	// with a fresh read of the shops.
 	Refresh time.Duration
+	// Scheduler picks the shop each claim is for: scheduler.ModeDRR (the
+	// default) or scheduler.ModeFIFO, the experiment's baseline (AC-9.3).
+	Scheduler scheduler.Mode
+	// Quantum is the DRR base quantum: the largest job cost in config (design
+	// §2). It must be at least 1 for DRR, and FIFO ignores it.
+	Quantum int64
+	// LockName names the leader lock. The default is LeaderLockName. Only tests
+	// set it, to run two leaders at once and show that Q3 and Q5 hold in a split brain.
+	LockName string
+	// Now is the monotonic clock the token buckets refill by (design §6.3). The
+	// default is time.Now. Tests replace it.
+	Now func() time.Time
 	// LongPoll is how long a claim request waits before 204 (design §2: 25 s).
 	LongPoll time.Duration
 	// ReaperInterval is the reaper scan (D-003: 5 s), and ReaperBatch the most
@@ -93,6 +115,18 @@ func New(cfg Config) (*Dispatcher, error) {
 	if cfg.DB == nil || cfg.Connect == nil || cfg.Log == nil {
 		return nil, errors.New("dispatcher: needs DB, Connect and Log")
 	}
+	if cfg.Scheduler == "" {
+		cfg.Scheduler = scheduler.ModeDRR
+	}
+	if cfg.LockName == "" {
+		cfg.LockName = LeaderLockName
+	}
+	if cfg.Now == nil {
+		cfg.Now = time.Now
+	}
+	if _, err := scheduler.New(cfg.Scheduler, cfg.Quantum); err != nil {
+		return nil, fmt.Errorf("dispatcher: %w", err)
+	}
 	if cfg.Refresh <= 0 || cfg.LongPoll <= 0 || cfg.ReaperInterval <= 0 || cfg.ReaperBatch <= 0 || cfg.StandbyRetry <= 0 ||
 		cfg.PruneInterval <= 0 || cfg.PruneBatch <= 0 {
 		return nil, errors.New("dispatcher: intervals and batch sizes must be positive")
@@ -139,7 +173,7 @@ func (d *Dispatcher) Run(ctx context.Context) error {
 func (d *Dispatcher) campaign(ctx context.Context, conn *pgx.Conn) bool {
 	for {
 		var got bool
-		if err := conn.QueryRow(ctx, `SELECT pg_try_advisory_lock(hashtextextended($1, 0))`, LeaderLockName).Scan(&got); err != nil {
+		if err := conn.QueryRow(ctx, `SELECT pg_try_advisory_lock(hashtextextended($1, 0))`, d.cfg.LockName).Scan(&got); err != nil {
 			if ctx.Err() == nil {
 				d.cfg.Log.Warn("leader lock attempt failed", "err", err.Error())
 			}
@@ -228,8 +262,18 @@ func (d *Dispatcher) signal() {
 }
 
 // claimLoop claims for waiting workers whenever one arrives, a job is
-// enqueued, the reaper requeues jobs, or the refresh interval passes.
+// enqueued, the reaper requeues jobs, or the refresh interval passes. Each wake
+// with a worker waiting starts by refreshing the book from Postgres (design §6.1:
+// a notification refreshes early, and so does a worker, since a job finishing
+// frees a slot and sends the worker back for another). A new leader starts with a
+// new scheduler: deficits start from 0 (D-002).
 func (d *Dispatcher) claimLoop(ctx context.Context) {
+	sched, err := scheduler.New(d.cfg.Scheduler, d.cfg.Quantum)
+	if err != nil {
+		d.cfg.Log.Error("scheduler", "err", err.Error())
+		return
+	}
+	bk := newBook(d.cfg.Now, sched)
 	ticker := time.NewTicker(d.cfg.Refresh)
 	defer ticker.Stop()
 	for {
@@ -239,31 +283,72 @@ func (d *Dispatcher) claimLoop(ctx context.Context) {
 		case <-d.wake:
 		case <-ticker.C:
 		}
+		if !d.anyWaiting() {
+			continue
+		}
+		snaps, err := store.SnapshotShops(ctx, d.cfg.DB)
+		if err != nil {
+			if ctx.Err() == nil {
+				d.cfg.Log.Warn("refresh failed", "err", err.Error())
+			}
+			continue
+		}
+		bk.refresh(snaps)
 		for ctx.Err() == nil {
 			batch := d.take()
 			if len(batch) == 0 {
 				break
 			}
-			owners := make([]string, len(batch))
-			for i, w := range batch {
-				owners[i] = w.owner
-			}
-			jobs, err := store.Claim(ctx, d.cfg.DB, owners)
-			for i := range jobs {
-				batch[i].reply <- reply{job: &jobs[i]}
-			}
-			d.settle(batch[len(jobs):])
+			served, err := d.serve(ctx, bk, batch)
+			d.settle(batch[served:])
 			if err != nil {
 				if ctx.Err() == nil {
 					d.cfg.Log.Warn("claim failed", "err", err.Error())
 				}
 				break
 			}
-			if len(jobs) < len(batch) {
-				break // no more runnable jobs; wait for a signal or the next refresh
+			if served < len(batch) {
+				break // no shop can claim now; wait for a signal or the next refresh
 			}
 		}
 	}
+}
+
+// serve claims jobs for batch, one claim per scheduler offer, and answers each
+// worker that got a job. It returns how many workers, from the front of batch,
+// were answered with a job.
+func (d *Dispatcher) serve(ctx context.Context, bk *book, batch []*waiter) (int, error) {
+	served := 0
+	for range len(batch) + len(bk.shops)*2 + maxClaimRoundsPerWake {
+		if served == len(batch) {
+			break
+		}
+		p, ok := bk.next(len(batch) - served)
+		if !ok {
+			break
+		}
+		owners := make([]string, p.workers)
+		for i := range owners {
+			owners[i] = batch[served+i].owner
+		}
+		out, err := store.ClaimFor(ctx, d.cfg.DB, owners, p.spec)
+		if err != nil {
+			return served, err
+		}
+		for i := range out.Jobs {
+			batch[served+i].reply <- reply{job: &out.Jobs[i]}
+		}
+		served += len(out.Jobs)
+		bk.done(p, out)
+	}
+	return served, nil
+}
+
+// anyWaiting reports whether a worker is waiting for a job.
+func (d *Dispatcher) anyWaiting() bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return len(d.waiting) > 0
 }
 
 // take removes every waiting worker for one claim.
