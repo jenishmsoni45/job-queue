@@ -4,6 +4,9 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base64"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"testing"
 
 	"github.com/jenishmsoni45/job-queue/internal/webhook"
@@ -55,4 +58,65 @@ func mustDecode(t *testing.T, s string) []byte {
 		t.Fatal(err)
 	}
 	return b
+}
+
+// P5-3: Verify compares MACs with hmac.Equal, which takes the same time
+// whatever the bytes are, and never with bytes.Equal, ==, or a string compare,
+// which stop at the first differing byte and leak how much of a guess was right.
+// The receiver calls Verify on the raw body before parsing it (internal/api).
+func TestVerifyComparesWithHMACEqual(t *testing.T) {
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "webhook.go", nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var verify *ast.FuncDecl
+	for _, d := range f.Decls {
+		if fn, ok := d.(*ast.FuncDecl); ok && fn.Name.Name == "Verify" {
+			verify = fn
+		}
+	}
+	if verify == nil {
+		t.Fatal("no Verify function")
+	}
+	usesHMACEqual := false
+	ast.Inspect(verify.Body, func(n ast.Node) bool {
+		switch n := n.(type) {
+		case *ast.CallExpr:
+			if sel, ok := n.Fun.(*ast.SelectorExpr); ok {
+				if pkg, ok := sel.X.(*ast.Ident); ok {
+					switch pkg.Name + "." + sel.Sel.Name {
+					case "hmac.Equal":
+						usesHMACEqual = true
+					case "bytes.Equal", "bytes.Compare", "strings.Compare", "strings.EqualFold", "reflect.DeepEqual":
+						t.Errorf("%s: Verify compares with %s.%s", fset.Position(n.Pos()), pkg.Name, sel.Sel.Name)
+					}
+				}
+			}
+		case *ast.BinaryExpr:
+			if n.Op == token.EQL || n.Op == token.NEQ {
+				// Only length and nil checks are allowed; a MAC or header is never compared with ==.
+				if !isLenOrNilOrEmpty(n.X) && !isLenOrNilOrEmpty(n.Y) {
+					t.Errorf("%s: Verify compares with %s", fset.Position(n.Pos()), n.Op)
+				}
+			}
+		}
+		return true
+	})
+	if !usesHMACEqual {
+		t.Error("Verify does not call hmac.Equal")
+	}
+}
+
+func isLenOrNilOrEmpty(e ast.Expr) bool {
+	switch e := e.(type) {
+	case *ast.Ident:
+		return e.Name == "nil"
+	case *ast.BasicLit:
+		return e.Value == `""` || e.Value == "0"
+	case *ast.CallExpr:
+		id, ok := e.Fun.(*ast.Ident)
+		return ok && id.Name == "len"
+	}
+	return false
 }

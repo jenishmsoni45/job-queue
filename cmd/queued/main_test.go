@@ -10,6 +10,7 @@ import (
 	"maps"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -19,8 +20,10 @@ import (
 
 	"github.com/jenishmsoni45/job-queue/internal/config"
 	"github.com/jenishmsoni45/job-queue/internal/httpserver"
+	"github.com/jenishmsoni45/job-queue/internal/mockshop"
 	"github.com/jenishmsoni45/job-queue/internal/pgtest"
 	"github.com/jenishmsoni45/job-queue/internal/scheduler"
+	"github.com/jenishmsoni45/job-queue/internal/webhook"
 	"github.com/jenishmsoni45/job-queue/migrations"
 )
 
@@ -192,6 +195,60 @@ func TestRolesRunAJobEndToEnd(t *testing.T) {
 				t.Fatalf("GET job %d: status %d", created.ID, status)
 			}
 		}
+	}
+}
+
+// The Shopify path end to end through the three roles, in process (design
+// §11.1, §12, D-020): a signed orders/create webhook posted to api becomes an
+// order.tag job, which the worker, with its production handlers and
+// QUEUED_MOCKSHOP_URL pointing at an in-process mockshop, runs to completion,
+// tagging the order once with the key job-<id>-tag.
+func TestRolesRunAWebhookEndToEnd(t *testing.T) {
+	db := pgtest.NewMigrated(t)
+	cfg, err := config.Load(testConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	shop := mockshop.NewAPI(cfg, nil)
+	mux := http.NewServeMux()
+	shop.Register(mux)
+	ms := httptest.NewServer(mux)
+	defer ms.Close()
+
+	apiAddr := startRole(t, "api", roleEnv(db, nil))
+	dispatcherAddr := startRole(t, "dispatcher", roleEnv(db, nil))
+	startRole(t, "worker", roleEnv(db, map[string]string{
+		"QUEUED_DISPATCHER_URL": "http://" + dispatcherAddr,
+		"QUEUED_MOCKSHOP_URL":   ms.URL,
+	}))
+
+	wh, err := mockshop.NewWebhook([]byte(testSecret), "shop-a.test", 555, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := &mockshop.Sender{
+		Target: "http://" + apiAddr + webhook.Path, Secret: []byte(testSecret), HTTP: http.DefaultClient,
+		Settings: config.Mockshop{RetryHorizonMS: 5000, RetryBaseMS: 100, RetryCapMS: 1000, DeliveryTimeoutMS: 2000},
+	}
+	if out := s.Deliver(t.Context(), wh); !out.Delivered {
+		t.Fatalf("delivery: %+v", out)
+	}
+	var id int64
+	if err := db.Pool(t, "e2e", 2).QueryRow(t.Context(), `SELECT job_id FROM dedupe_keys WHERE key = $1`, wh.ID).Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+	var job struct{ State string }
+	deadline := time.Now().Add(15 * time.Second)
+	for job.State != "completed" {
+		if time.Now().After(deadline) {
+			t.Fatalf("job %d is %q after 15s, want completed", id, job.State)
+		}
+		time.Sleep(20 * time.Millisecond)
+		call(t, http.MethodGet, fmt.Sprintf("http://%s/v1/jobs/%d", apiAddr, id), "", &job)
+	}
+	m, _ := shop.Mutations("shop-a.test")
+	if m.Applied[fmt.Sprintf("job-%d-tag", id)] != 1 || len(m.Applied) != 1 {
+		t.Errorf("mutation log = %+v, want job-%d-tag applied once", m, id)
 	}
 }
 
