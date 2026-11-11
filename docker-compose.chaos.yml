@@ -66,6 +66,7 @@ services:
 
   mockshop:
     ports: !reset []
+    volumes: *chaos-config
 
   chaos:
     environment:

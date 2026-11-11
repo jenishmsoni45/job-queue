@@ -90,6 +90,10 @@ services:
   api:
     <<: *app
     command: ["api"]
+    environment:
+      <<: *pg-client-env
+      # The dummy HMAC secret the webhook receiver checks with (design §15).
+      SHOPIFY_WEBHOOK_SECRET: ${SHOPIFY_WEBHOOK_SECRET:?set SHOPIFY_WEBHOOK_SECRET in .env (copy .env.example)}
     volumes: *queued-config
     ports:
       - "127.0.0.1:8080:8080"
@@ -130,12 +134,19 @@ services:
       migrate:
         condition: service_completed_successfully
 
+  # The local Shopify simulation (design §12): it reads the same config file as
+  # queued for each shop's Admin API bucket and webhook rate (D-050), and signs
+  # webhooks with the same dummy secret the api checks.
   mockshop:
     <<: *app
     entrypoint: ["/mockshop"]
     # Replaces the Postgres client settings: mockshop never talks to the database.
     environment:
       MOCKSHOP_HTTP_ADDR: ":8090"
+      MOCKSHOP_CONFIG: /etc/queued/shops.json
+      MOCKSHOP_WEBHOOK_URL: http://api:8080/webhooks/shopify
+      SHOPIFY_WEBHOOK_SECRET: ${SHOPIFY_WEBHOOK_SECRET:?set SHOPIFY_WEBHOOK_SECRET in .env (copy .env.example)}
+    volumes: *queued-config
     ports:
       - "127.0.0.1:8090:8090"
     healthcheck:

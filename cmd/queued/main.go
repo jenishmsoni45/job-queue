@@ -13,6 +13,8 @@
 // with the shop and kind settings in the config file (design §11.4):
 //
 //	QUEUED_HTTP_ADDR          listen address (":8080")
+//	SHOPIFY_WEBHOOK_SECRET    api: the dummy HMAC secret webhooks are checked with (required)
+//	QUEUED_MOCKSHOP_URL       worker: mockshop's Admin API (http://mockshop:8090)
 //	QUEUED_CONFIG             config file (/etc/queued/shops.json); every role validates it
 //	QUEUED_DISPATCHER_URL     worker: the dispatcher's base URL (http://dispatcher:8080)
 //	QUEUED_WORKER_SLOTS       worker: handler goroutines (8)
@@ -211,7 +213,11 @@ func runRole(ctx context.Context, role, addr string, getenv func(string) string,
 	}
 	switch role {
 	case "api":
-		return runAPI(ctx, addr, cfg, connCfg, log)
+		secret := getenv("SHOPIFY_WEBHOOK_SECRET")
+		if secret == "" {
+			return errors.New("SHOPIFY_WEBHOOK_SECRET is required: the webhook receiver checks every webhook's HMAC with it")
+		}
+		return runAPI(ctx, addr, cfg, connCfg, []byte(secret), log)
 	case "dispatcher":
 		return runDispatcher(ctx, addr, s, cfg, connCfg, log)
 	default:
@@ -251,7 +257,7 @@ func openPool(ctx context.Context, connCfg *pgx.ConnConfig, app string, maxConns
 
 // runAPI seeds shops and kinds from the config file (D-019), then serves the
 // job endpoints.
-func runAPI(ctx context.Context, addr string, cfg *config.File, connCfg *pgx.ConnConfig, log *slog.Logger) error {
+func runAPI(ctx context.Context, addr string, cfg *config.File, connCfg *pgx.ConnConfig, secret []byte, log *slog.Logger) error {
 	pool, err := openPool(ctx, connCfg, "queued-api", 0)
 	if err != nil {
 		return err
@@ -266,7 +272,7 @@ func runAPI(ctx context.Context, addr string, cfg *config.File, connCfg *pgx.Con
 	log.Info("seeded config", "shops", len(cfg.Shops), "kinds", len(cfg.Kinds))
 
 	mux := httpserver.NewMux("queued api")
-	api.New(pool, log).Register(mux)
+	api.New(pool, log).WithWebhookSecret(secret).Register(mux)
 	return httpserver.ListenAndServe(ctx, addr, mux, log)
 }
 

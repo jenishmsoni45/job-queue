@@ -12,7 +12,8 @@
     {"kind": "test.fail", "cost": 1, "lease_ms": 1000, "heartbeat_ms": 200, "timeout_ms": 10000, "max_attempts": 5, "max_throttles": 10, "handler_sleep_ms": 0},
     {"kind": "test.panic", "cost": 1, "lease_ms": 1000, "heartbeat_ms": 200, "timeout_ms": 10000, "max_attempts": 5, "max_throttles": 10, "handler_sleep_ms": 0},
     {"kind": "test.hang", "cost": 1, "lease_ms": 1000, "heartbeat_ms": 200, "timeout_ms": 10000, "max_attempts": 5, "max_throttles": 10, "handler_sleep_ms": 0},
-    {"kind": "test.effect", "cost": 1, "lease_ms": 1000, "heartbeat_ms": 200, "timeout_ms": 10000, "max_attempts": 5, "max_throttles": 10, "handler_sleep_ms": 0}
+    {"kind": "test.effect", "cost": 1, "lease_ms": 1000, "heartbeat_ms": 200, "timeout_ms": 10000, "max_attempts": 5, "max_throttles": 10, "handler_sleep_ms": 0},
+    {"kind": "order.tag", "cost": 1, "lease_ms": 1000, "heartbeat_ms": 200, "timeout_ms": 10000, "max_attempts": 5, "max_throttles": 10, "handler_sleep_ms": 0}
   ],
   "mockshop": {
     "retry_horizon_ms": 3600000,

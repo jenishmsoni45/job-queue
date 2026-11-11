@@ -24,7 +24,10 @@ import (
 	"github.com/jenishmsoni45/job-queue/migrations"
 )
 
-const testConfig = "../../tests/testdata/shops.json"
+const (
+	testConfig = "../../tests/testdata/shops.json"
+	testSecret = "test-webhook-secret"
+)
 
 // freeAddr returns a loopback address with a port that was free a moment ago.
 func freeAddr(t *testing.T) string {
@@ -56,6 +59,7 @@ func roleEnv(db *pgtest.DB, extra map[string]string) map[string]string {
 		"QUEUED_BACKOFF_BASE_MS":  "10",
 		"QUEUED_BACKOFF_CAP_MS":   "100",
 		"QUEUED_WORKER_SLOTS":     "2",
+		"SHOPIFY_WEBHOOK_SECRET":  testSecret,
 	}
 	maps.Copy(vars, extra)
 	return vars
@@ -206,6 +210,20 @@ func call(t *testing.T, method, url, body string, out any) int {
 		t.Fatalf("%s %s: decode: %v", method, url, err)
 	}
 	return resp.StatusCode
+}
+
+// The api role refuses to start without the webhook secret, since it could
+// check no webhook's HMAC (AC-8.1).
+func TestAPIRoleNeedsTheWebhookSecret(t *testing.T) {
+	db := pgtest.NewMigrated(t)
+	vars := roleEnv(db, map[string]string{"SHOPIFY_WEBHOOK_SECRET": "", "QUEUED_HTTP_ADDR": freeAddr(t)})
+	var stderr bytes.Buffer
+	if code := run(t.Context(), []string{"api"}, env(vars), &stderr); code != 1 {
+		t.Fatalf("exit %d, want 1", code)
+	}
+	if !strings.Contains(stderr.String(), "SHOPIFY_WEBHOOK_SECRET") {
+		t.Errorf("stderr = %q, want it to name the missing secret", stderr.String())
+	}
 }
 
 // Design §11.4: every role fails fast on a bad config file or setting.

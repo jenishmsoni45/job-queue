@@ -4,10 +4,12 @@
 package queuetest
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
 	"log/slog"
+	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -21,6 +23,7 @@ import (
 	"github.com/jenishmsoni45/job-queue/internal/pgtest"
 	"github.com/jenishmsoni45/job-queue/internal/queue"
 	"github.com/jenishmsoni45/job-queue/internal/store"
+	"github.com/jenishmsoni45/job-queue/internal/webhook"
 )
 
 // Shops in tests/testdata/shops.json.
@@ -351,4 +354,55 @@ func (e *Env) WaitState(t testing.TB, id int64, state string, timeout time.Durat
 		return j.State == state
 	})
 	return j
+}
+
+// WebhookSecret is the HMAC secret test api servers check webhooks with.
+const WebhookSecret = "test-webhook-secret"
+
+// Webhook is one webhook delivery for PostWebhook. Zero fields get defaults:
+// a valid signature over Body, the orders/create topic, and a body for order 1.
+type Webhook struct {
+	Shop, ID string
+	Body     []byte
+	Topic    string
+	// HMAC overrides the signature; "-" sends none.
+	HMAC string
+}
+
+// PostWebhook delivers w to the api server at base and returns the status and
+// the decoded JSON answer (nil if the body is not JSON).
+func PostWebhook(t testing.TB, client *http.Client, base string, w Webhook) (int, http.Header, map[string]any) {
+	t.Helper()
+	if w.Body == nil {
+		w.Body = []byte(`{"id": 1}`)
+	}
+	if w.Topic == "" {
+		w.Topic = webhook.TopicOrdersCreate
+	}
+	switch w.HMAC {
+	case "":
+		w.HMAC = webhook.Sign([]byte(WebhookSecret), w.Body)
+	case "-":
+		w.HMAC = ""
+	}
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, base+webhook.Path, bytes.NewReader(w.Body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(webhook.HeaderTopic, w.Topic)
+	req.Header.Set(webhook.HeaderShopDomain, w.Shop)
+	req.Header.Set(webhook.HeaderWebhookID, w.ID)
+	if w.HMAC != "" {
+		req.Header.Set(webhook.HeaderHMAC, w.HMAC)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	raw, _ := io.ReadAll(resp.Body)
+	var out map[string]any
+	_ = json.Unmarshal(raw, &out)
+	return resp.StatusCode, resp.Header, out
 }
