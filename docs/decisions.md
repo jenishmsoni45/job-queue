@@ -55,6 +55,13 @@ Each entry gives the question, the options considered, the decision and its cons
 | D-047 | The row lock claims and the reaper take | Phase 3: found by the AC-7.1 test | Decided |
 | D-048 | What a batch enqueue returns | Phase 4: gap in design §11.1 | Decided |
 | D-049 | What a rejected batch adds to `shed_total` | Phase 4: gap in design §5.2 | Decided |
+| D-050 | Where `mockshop`, `loadgen` and dedupe-window settings live | Phase 5: gap in design §11.4 | Decided |
+| D-051 | Which time puts a job in an NFR-9 bucket | Phase 5: gap in NFR-9 and design §17 | Decided |
+| D-052 | Which bench outputs are committed | Phase 5: gap in design §17 | Decided |
+| D-053 | Where `make bench` runs | Phase 5: gap in design §17 | Decided |
+| D-054 | The webhook rate in the `make up` stack | Phase 5: gap in design §12 | Decided |
+| D-055 | The throttle-storm scenario | Phase 5: optional scope (D-010) | Decided |
+| D-056 | When `loadgen` stops after the spike | Phase 5: design §17 never ends | Decided |
 
 ---
 
@@ -735,3 +742,83 @@ Each entry gives the question, the options considered, the decision and its cons
 - **Decision:** A (the user's choice). A rejected single enqueue adds 1.
 - **Why not B:** it counts jobs that admission never refused. Duplicates don't count toward the limit (AC-2.3), so they are not shed either.
 - **Consequences:** a rejected batch still reads its existing dedupe keys before it takes the shop row lock, as an accepted one does. `shed_total` is written in the same transaction as the check, under the lock.
+
+## D-050 · Where `mockshop`, `loadgen` and dedupe-window settings live
+
+- **Date:** 2026-11-11 · **Phase:** 5 · **Source:** Gap. Phase 5 needs settings for `mockshop` (each shop's Admin API bucket, webhook rates, duplicate odds, retries) and for `loadgen` (seed, tick, rates, spike). Design §11.4 says config validation rejects a `mockshop` retry horizon that isn't shorter than the dedupe window, but the dedupe window was an environment setting of the dispatcher only (`QUEUED_DEDUPE_WINDOW_MS`), so no single process could compare the two.
+- **Options:**
+  - A. One config file. Each shop gains `mock_api_capacity`, `mock_api_leak_per_sec` and `webhooks_per_sec`. A top-level `dedupe_window_ms` replaces the environment setting. New sections: `mockshop` (retry horizon, backoff, delivery timeout, duplicate odds) and an optional `loadgen` (seed, tick, rates, spike).
+  - B. Separate files per tool, with the dedupe window kept in the environment and read by `mockshop` too.
+  - C. Environment variables for everything new.
+- **Decision:** A (the user's choice). Design §2, §11.4 and §12 now say so (approved by the user).
+  - Every process validates the whole file, including that the retry horizon is shorter than the dedupe window (D-018).
+  - The `loadgen` section is optional; `loadgen` refuses a file without one. `config/shops.json` has none, and `bench/blackfriday.json` has one.
+- **Why not B:** the dispatcher and `mockshop` could be given different windows, and D-019 and design §17 each expect one file.
+- **Why not C:** per-shop buckets (D-010) don't fit environment variables, and the bench config would no longer be one committed file.
+
+## D-051 · Which time puts a job in an NFR-9 bucket
+
+- **Date:** 2026-11-11 · **Phase:** 5 · **Source:** Gap. NFR-9 checks each shop's p99 queue wait "in every 10 s bucket of the spike", and the chart plots p99 wait in 10 s buckets, but neither says which of a job's times decides its bucket.
+- **Options:**
+  - A. Its arrival: `first_runnable_at`.
+  - B. Its first claim: `first_claimed_at`, as the console's read API window does (design §11.1).
+- **Decision:** A (the user's choice). Design §17 now says so (approved by the user).
+  - Every job that arrived during the spike is checked, including one claimed after the spike ended.
+  - The chart uses the same buckets, aligned to the run's first arrival.
+- **Why not B:** a job that arrived during the spike but was claimed after it would fall outside the spike's buckets, so the check would be looser.
+
+## D-052 · Which bench outputs are committed
+
+- **Date:** 2026-11-11 · **Phase:** 5 · **Source:** Gap. `make bench` exports per-job timestamps for each run, and each run has hundreds of thousands of jobs. D-022 commits result files, but design §17 doesn't say whether that includes the raw exports.
+- **Options:**
+  - A. Write the raw exports gzipped under `bench/results/<timestamp>/<run>/raw/`, git-ignored. Commit everything else.
+  - B. Commit the gzipped raw exports too.
+  - C. Commit raw, uncompressed exports.
+- **Decision:** A (the user's choice). Design §17 now says so (approved by the user).
+  - Each run's committed summary holds the per-shop, per-bucket series the chart is drawn from, so the chart and report can be rebuilt from committed files.
+  - README numbers are copied from `summary.json` (D-005).
+- **Why not B or C:** megabytes of permanent git history per bench run, when `make bench` regenerates the raw data.
+
+## D-053 · Where `make bench` runs
+
+- **Date:** 2026-11-11 · **Phase:** 5 · **Source:** Gap. Design §17 says each run "starts from a fresh database" but not on which Compose stack.
+- **Options:**
+  - A. Its own Compose project, `jobqueue-bench`, as chaos has (D-042).
+  - B. The `make up` stack, wiped before each run.
+- **Decision:** A (the user's choice). Design §17 now says so (approved by the user).
+  - The bench stack reads `bench/blackfriday.json` and publishes no ports. For each scheduler it is brought up fresh, with its volume removed, and `make bench` removes it when it ends, pass or fail. `make down` removes it too.
+  - A running `make up` stack would compete for CPU, which the report can't detect, so the docs say to stop it first.
+- **Why not B:** `make bench` would destroy the development database and leave the stack in bench settings.
+
+## D-054 · The webhook rate in the `make up` stack
+
+- **Date:** 2026-11-11 · **Phase:** 5 · **Source:** Gap. Design §12 says the webhook sender emits webhooks "at configured rates" without saying what `config/shops.json` sets.
+- **Options:**
+  - A. A low steady rate: 1 webhook per second per shop, with some duplicates.
+  - B. Off: 0 per shop.
+- **Decision:** A (the user's choice).
+  - `make up` runs the whole Shopify path live: HMAC, dedupe, `order.tag` and Admin API calls. The console in phase 6 has something to show without the bench.
+  - Bench, chaos and test configs set the rate to 0; they enqueue directly.
+  - Completed jobs stay in the development database until the pruner removes them (D-015).
+- **Why not B:** the running stack would never exercise the sender unless the config were edited.
+
+## D-055 · The throttle-storm scenario
+
+- **Date:** 2026-11-11 · **Phase:** 5 · **Source:** Phase 5 lists the throttle-storm bench scenario as optional (D-010, design §17).
+- **Options:**
+  - A. A follow-up.
+  - B. Build it in phase 5 as a third bench run, reported but not targeted.
+- **Decision:** A (the user's choice). It is listed under Follow-ups in the phase 5 PR.
+- **Why not B:** the phase is already large, and Q7 and the P5-2 tests prove throttle handling against a capacity-1 bucket.
+
+## D-056 · When `loadgen` stops after the spike
+
+- **Date:** 2026-11-11 · **Phase:** 5 · **Source:** Gap. Design §17 says that after the spike "every shop is back at the steady rate until every accepted job is done", but steady arrivals keep adding accepted jobs, so read literally the run never ends.
+- **Options:**
+  - A. Keep the steady rate until every job accepted before the spike ended is terminal, then stop sending.
+  - B. Send the steady rate for a fixed tail after the spike, then stop.
+- **Decision:** A (the user's choice). Design §17 now says so (approved by the user).
+  - `loadgen` remembers each shop's last job accepted before the spike ended and polls `GET /v1/jobs/{id}` for them. A shop's jobs are claimed oldest first, so once those are terminal, the spike's backlog has drained.
+  - A setting, `drain_max_ms`, bounds the tail if the drain never finishes.
+  - `make bench` then waits until every accepted job is terminal, including the last steady ones.
+- **Why not B:** if the drain outlasted the tail, the end of the drain would have no arrivals, and the chart couldn't show the other shops recovering.
