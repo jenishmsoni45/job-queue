@@ -6,10 +6,12 @@
 //
 // The Go tests run in the tools container, which has no Docker CLI (D-021), so
 // `make test` first writes `docker compose config --format json` on the host
-// (D-034): .cache/compose-config.json for the normal stack, and
+// (D-034): .cache/compose-config.json for the normal stack,
 // .cache/compose-config-chaos.json for the chaos stack, which is the separate
-// jobqueue-chaos project with docker-compose.chaos.yml on top (D-042). These
-// tests read those files.
+// jobqueue-chaos project with docker-compose.chaos.yml on top (D-042), and
+// .cache/compose-config-bench.json for the bench stack, the jobqueue-bench
+// project with docker-compose.bench.yml on top (D-053). These tests read those
+// files.
 package compose
 
 import (
@@ -31,9 +33,12 @@ const (
 	repoRoot        = "../.."
 	configFile      = ".cache/compose-config.json"
 	chaosConfigFile = ".cache/compose-config-chaos.json"
+	benchConfigFile = ".cache/compose-config-bench.json"
 	chaosService    = "chaos"
 	chaosProfile    = "chaos"
 	chaosProject    = "jobqueue-chaos"
+	benchProfile    = "bench"
+	benchProject    = "jobqueue-bench"
 )
 
 // The default-profile services phase 1 defines.
@@ -43,7 +48,7 @@ var defaultServices = []string{
 }
 
 // oneShots run a command and exit, so they have no healthcheck (D-033).
-var oneShots = map[string]bool{"migrate": true, "tools": true, chaosService: true}
+var oneShots = map[string]bool{"migrate": true, "tools": true, chaosService: true, "loadgen": true, "bench": true}
 
 // queuedRoles must start only after migrate has exited 0 (D-033).
 var queuedRoles = []string{"api", "dispatcher", "worker-1", "worker-2"}
@@ -113,9 +118,9 @@ func loadConfigFile(t *testing.T, file string) config {
 	return c
 }
 
-// bothStacks runs check on the normal stack and on the chaos stack.
+// bothStacks runs check on the normal stack, the chaos stack and the bench stack.
 func bothStacks(t *testing.T, check func(t *testing.T, c config)) {
-	for _, file := range []string{configFile, chaosConfigFile} {
+	for _, file := range []string{configFile, chaosConfigFile, benchConfigFile} {
 		t.Run(filepath.Base(file), func(t *testing.T) { check(t, loadConfigFile(t, file)) })
 	}
 }
@@ -141,6 +146,11 @@ func TestDefaultServices(t *testing.T) {
 	}
 	if chaos, ok := c.Services[chaosService]; !ok || !slices.Equal(chaos.Profiles, []string{chaosProfile}) {
 		t.Errorf("the chaos service must exist under the chaos profile only; got %+v", chaos.Profiles)
+	}
+	for _, name := range []string{"loadgen", "bench"} {
+		if s, ok := c.Services[name]; !ok || !slices.Equal(s.Profiles, []string{benchProfile}) {
+			t.Errorf("the %s service must exist under the bench profile only; got %+v", name, s.Profiles)
+		}
 	}
 }
 
@@ -424,6 +434,43 @@ func TestChaosStack(t *testing.T) {
 	if err := checkDurable(c.Services["postgres"]); err != nil {
 		t.Errorf("postgres: %v", err)
 	}
+}
+
+// D-053: the bench stack is its own project, publishes nothing on the host, and
+// every process of a run reads the one bench config file, so the FIFO and DRR
+// runs differ only in the dispatcher's QUEUED_SCHEDULER (AC-16.1). Its Postgres
+// stays durable, like the others.
+func TestBenchStack(t *testing.T) {
+	c := loadConfigFile(t, benchConfigFile)
+	if c.Name != benchProject {
+		t.Errorf("bench project name = %q, want %q", c.Name, benchProject)
+	}
+	for name, s := range c.Services {
+		if len(s.Ports) > 0 {
+			t.Errorf("service %s publishes %d ports in the bench stack", name, len(s.Ports))
+		}
+	}
+	for _, name := range []string{"api", "dispatcher", "worker-1", "worker-2", "mockshop", "loadgen"} {
+		if src := mountedAt(c.Services[name], "/etc/queued/shops.json"); src != "./bench/blackfriday.json" {
+			t.Errorf("service %s reads %q as its config, want ./bench/blackfriday.json", name, src)
+		}
+	}
+	if v := c.Services["dispatcher"].Environment["QUEUED_SCHEDULER"]; v == nil {
+		t.Error("the dispatcher's QUEUED_SCHEDULER is not set from the environment, so a run can't choose the scheduler")
+	}
+	if err := checkDurable(c.Services["postgres"]); err != nil {
+		t.Errorf("postgres: %v", err)
+	}
+}
+
+// mountedAt returns the source mounted at target, or "" if nothing is.
+func mountedAt(s service, target string) string {
+	for _, v := range s.Volumes {
+		if v.Target == target {
+			return v.Source
+		}
+	}
+	return ""
 }
 
 func deref(s *string) string {

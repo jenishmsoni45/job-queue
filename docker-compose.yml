@@ -195,6 +195,37 @@ services:
       - .:/src
       - /var/run/docker.sock:/var/run/docker.sock
 
+  # The Black Friday load (design §17): loadgen sends bench/blackfriday.json's seeded arrivals
+  # to the api and prints its report on stdout. scripts/bench.sh runs it, and the bench runner
+  # below, in the separate jobqueue-bench project with docker-compose.bench.yml (D-053). Both
+  # are command runners with no healthcheck (D-033).
+  loadgen:
+    <<: *app
+    entrypoint: ["/loadgen"]
+    profiles: [bench]
+    environment:
+      LOADGEN_API_URL: http://api:8080
+      LOADGEN_CONFIG: /etc/queued/shops.json
+    volumes:
+      - ./bench/blackfriday.json:/etc/queued/shops.json:ro
+
+  # The bench runner: it waits for every accepted job to finish, exports the run from
+  # Postgres and mockshop, and writes the report. It runs the binary make builds in the
+  # tools container, with the same image, and never gets the Docker socket.
+  bench:
+    build:
+      context: tools
+      dockerfile: Dockerfile
+    image: jobqueue-tools:local
+    profiles: [bench]
+    working_dir: /src
+    environment:
+      <<: *pg-client-env
+      BENCH_MOCKSHOP_URL: http://mockshop:8090
+      BENCH_CONFIG: /src/bench/blackfriday.json
+    volumes:
+      - .:/src
+
 volumes:
   pgdata:
   gomodcache:

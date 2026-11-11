@@ -1,0 +1,32 @@
+# Black Friday runs only (design §17, D-053). scripts/bench.sh applies this file on top of
+# docker-compose.yml in the separate Compose project jobqueue-bench, never in the `make up`
+# stack, and brings that project up fresh, volume removed, for each scheduler. It changes
+# two things:
+#   - every queued role, mockshop and loadgen read bench/blackfriday.json, the one config
+#     both runs share; the dispatcher's QUEUED_SCHEDULER is the only setting that differs
+#     between the runs (AC-9.3, AC-16.1);
+#   - nothing is published on the host, so the bench stack can't clash with `make up`.
+
+x-bench-config: &bench-config
+  - ./bench/blackfriday.json:/etc/queued/shops.json:ro
+
+services:
+  api:
+    ports: !reset []
+    volumes: *bench-config
+
+  dispatcher:
+    volumes: *bench-config
+
+  worker-1:
+    volumes: *bench-config
+
+  worker-2:
+    volumes: *bench-config
+
+  mockshop:
+    ports: !reset []
+    volumes: *bench-config
+
+  prometheus:
+    ports: !reset []
