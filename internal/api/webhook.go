@@ -8,12 +8,13 @@ import (
 	"net/http"
 	"strconv"
 
+	"github.com/jenishmsoni45/job-queue/internal/handlers"
 	"github.com/jenishmsoni45/job-queue/internal/store"
 	"github.com/jenishmsoni45/job-queue/internal/webhook"
 )
 
 // OrderTagKind is the job kind an orders/create webhook becomes (D-020).
-const OrderTagKind = "order.tag"
+const OrderTagKind = handlers.OrderTag
 
 // WithWebhookSecret sets the HMAC secret webhooks are checked with. Without
 // one, every webhook is refused with 401.
@@ -23,9 +24,7 @@ func (s *Server) WithWebhookSecret(secret []byte) *Server {
 }
 
 // OrderTagPayload is the payload of an order.tag job (D-020).
-type OrderTagPayload struct {
-	OrderID int64 `json:"order_id"`
-}
+type OrderTagPayload = handlers.OrderTagPayload
 
 // receiveWebhook answers POST /webhooks/shopify (design §11.1):
 //

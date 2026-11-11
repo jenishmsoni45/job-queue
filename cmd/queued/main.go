@@ -49,9 +49,11 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/jenishmsoni45/job-queue/internal/adminapi"
 	"github.com/jenishmsoni45/job-queue/internal/api"
 	"github.com/jenishmsoni45/job-queue/internal/config"
 	"github.com/jenishmsoni45/job-queue/internal/dispatcher"
+	"github.com/jenishmsoni45/job-queue/internal/handlers"
 	"github.com/jenishmsoni45/job-queue/internal/httpserver"
 	"github.com/jenishmsoni45/job-queue/internal/migrate"
 	"github.com/jenishmsoni45/job-queue/internal/queue"
@@ -130,6 +132,7 @@ func run(ctx context.Context, args []string, getenv func(string) string, stderr 
 type settings struct {
 	configPath    string
 	dispatcherURL string
+	mockshopURL   string
 	slots         int
 	testHandlers  bool
 	scheduler     scheduler.Mode
@@ -146,6 +149,7 @@ func loadSettings(getenv func(string) string) (settings, error) {
 	s := settings{
 		configPath:    getenv("QUEUED_CONFIG"),
 		dispatcherURL: getenv("QUEUED_DISPATCHER_URL"),
+		mockshopURL:   getenv("QUEUED_MOCKSHOP_URL"),
 		testHandlers:  getenv("QUEUED_TEST_HANDLERS") == "1",
 	}
 	if s.configPath == "" {
@@ -153,6 +157,9 @@ func loadSettings(getenv func(string) string) (settings, error) {
 	}
 	if s.dispatcherURL == "" {
 		s.dispatcherURL = "http://dispatcher:8080"
+	}
+	if s.mockshopURL == "" {
+		s.mockshopURL = "http://mockshop:8090"
 	}
 	var errs []error
 	mode := scheduler.ModeDRR
@@ -319,6 +326,15 @@ func runDispatcher(ctx context.Context, addr string, s settings, cfg *config.Fil
 	return err
 }
 
+// adminClient is the handlers' client for mockshop's Admin API. It keeps an
+// idle connection per handler slot, so a busy worker reuses connections instead
+// of opening one per call. Each call is bounded by its handler's context too.
+func adminClient(baseURL string, slots int) *adminapi.Client {
+	tr := http.DefaultTransport.(*http.Transport).Clone()
+	tr.MaxIdleConnsPerHost = slots
+	return &adminapi.Client{BaseURL: baseURL, HTTP: &http.Client{Transport: tr, Timeout: 30 * time.Second}}
+}
+
 // retention is how long the pruner keeps finished rows: the environment's job
 // retention windows, and the config file's dedupe window (D-018, D-050), the
 // same window mockshop's retry horizon is checked against.
@@ -339,8 +355,10 @@ func runWorker(ctx context.Context, addr string, s settings, cfg *config.File, c
 	defer pool.Close()
 
 	reg := queue.NewRegistry()
+	admin := adminClient(s.mockshopURL, s.slots)
+	handlers.Register(reg, cfg, admin)
 	if s.testHandlers {
-		testkinds.Register(reg)
+		testkinds.Register(reg, testkinds.WithAdminAPI(admin))
 	}
 	host, err := os.Hostname()
 	if err != nil {
