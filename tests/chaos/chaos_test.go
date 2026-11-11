@@ -31,8 +31,8 @@ const defaultRuns = 100
 //	make chaos-smoke                3 runs (CI)
 //
 // Settings: CHAOS_SEED, CHAOS_RUNS, CHAOS_BASE_SEED (D-046), CHAOS_RECOVERY,
-// CHAOS_RESULTS_DIR, CHAOS_CONFIG, CHAOS_API_URL, CHAOS_TOXIPROXY_URL,
-// CHAOS_DOCKER_SOCKET and CHAOS_REAPER_SCAN_MS.
+// CHAOS_RESULTS_DIR, CHAOS_CONFIG, CHAOS_API_URL, CHAOS_MOCKSHOP_URL,
+// CHAOS_TOXIPROXY_URL, CHAOS_DOCKER_SOCKET and CHAOS_REAPER_SCAN_MS.
 func TestChaos(t *testing.T) {
 	if os.Getenv("CHAOS_RUN") != "1" {
 		t.Skip("chaos runs need the chaos stack: use `make chaos`, `make chaos-one` or `make chaos-smoke`")
@@ -77,13 +77,14 @@ func TestChaos(t *testing.T) {
 	defer pool.Close()
 
 	env := &Env{
-		DB:     pool,
-		Docker: NewDocker(setting("CHAOS_DOCKER_SOCKET", "/var/run/docker.sock"), ComposeProject, Services...),
-		Toxi:   NewToxiproxy(&http.Client{Timeout: 10 * time.Second}, setting("CHAOS_TOXIPROXY_URL", "http://toxiproxy:8474")),
-		API:    setting("CHAOS_API_URL", "http://api:8080"),
-		HTTP:   &http.Client{Transport: &http.Transport{MaxIdleConnsPerHost: enqueueConcurrency}},
-		Shops:  shops,
-		Logf:   t.Logf,
+		DB:       pool,
+		Docker:   NewDocker(setting("CHAOS_DOCKER_SOCKET", "/var/run/docker.sock"), ComposeProject, Services...),
+		Toxi:     NewToxiproxy(&http.Client{Timeout: 10 * time.Second}, setting("CHAOS_TOXIPROXY_URL", "http://toxiproxy:8474")),
+		API:      setting("CHAOS_API_URL", "http://api:8080"),
+		Mockshop: setting("CHAOS_MOCKSHOP_URL", "http://mockshop:8090"),
+		HTTP:     &http.Client{Transport: &http.Transport{MaxIdleConnsPerHost: enqueueConcurrency}},
+		Shops:    shops,
+		Logf:     t.Logf,
 	}
 
 	started := time.Now().UTC()

@@ -83,6 +83,9 @@ type PlannedJob struct {
 	Key     string `json:"key"`
 	Shop    string `json:"shop"`
 	SleepMS int    `json:"sleep_ms"`
+	// OrderID is the order the job tags through mockshop (design §18, from
+	// phase 5), so each completed job's one effect there can be checked (NFR-11).
+	OrderID int64 `json:"order_id"`
 }
 
 // Plan is everything a seed decides: the workload and the fault schedule.
@@ -105,6 +108,7 @@ func NewPlan(seed uint64, shops []string) Plan {
 			Key:     fmt.Sprintf("chaos-%d-%04d", seed, i),
 			Shop:    shops[jobsRNG.IntN(len(shops))],
 			SleepMS: jobsRNG.IntN(MaxJobSleepMS + 1),
+			OrderID: int64(i + 1),
 		}
 	}
 	p.Faults = newSchedule(faultsRNG)

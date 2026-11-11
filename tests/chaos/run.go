@@ -27,9 +27,11 @@ type Env struct {
 	Docker *Docker
 	Toxi   *Toxiproxy
 	API    string // the api role's base URL
-	HTTP   *http.Client
-	Shops  []string
-	Logf   func(format string, args ...any)
+	// Mockshop is mockshop's base URL, for its mutation log (NFR-11).
+	Mockshop string
+	HTTP     *http.Client
+	Shops    []string
+	Logf     func(format string, args ...any)
 
 	toxiAddrs []string // where connections through Toxiproxy come from; set by Setup
 }
@@ -283,7 +285,7 @@ func (e *Env) enqueueAll(ctx context.Context, plan Plan) ([]int64, enqueueCounts
 // retrying errors and 5xx answers until it is accepted or ctx ends.
 func (e *Env) enqueue(ctx context.Context, j PlannedJob, kind string) (id int64, duplicate bool, retries int, err error) {
 	body, err := json.Marshal(map[string]any{
-		"shop": j.Shop, "kind": kind, "payload": map[string]int{"ms": j.SleepMS}, "dedupe_key": j.Key,
+		"shop": j.Shop, "kind": kind, "payload": map[string]int64{"ms": int64(j.SleepMS), "order_id": j.OrderID}, "dedupe_key": j.Key,
 	})
 	if err != nil {
 		return 0, false, 0, err

@@ -188,6 +188,7 @@ services:
     environment:
       <<: *pg-client-env
       CHAOS_API_URL: http://api:8080
+      CHAOS_MOCKSHOP_URL: http://mockshop:8090
       CHAOS_TOXIPROXY_URL: http://toxiproxy:8474
       CHAOS_DOCKER_SOCKET: /var/run/docker.sock
       CHAOS_CONFIG: /src/tests/chaos/shops.json

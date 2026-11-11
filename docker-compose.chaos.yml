@@ -3,9 +3,10 @@
 # stack. It changes three things:
 #   - each worker and the dispatcher reach Postgres through its own Toxiproxy link, so faults
 #     can be injected on one process's link; api and the harness still connect directly;
-#   - every queued role reads tests/chaos/shops.json: test.effect has the 2 s chaos lease and
-#     0.5 s heartbeat (D-023), and test.sleep the default 30 s lease for crash recovery
-#     (NFR-10); workers register the test kinds and retry with a short backoff;
+#   - every queued role and mockshop read tests/chaos/shops.json: test.effect has the 2 s
+#     chaos lease and 0.5 s heartbeat (D-023), and test.sleep the default 30 s lease for crash
+#     recovery (NFR-10); mockshop's buckets never throttle and it sends no webhooks; workers
+#     register the test kinds and retry with a short backoff;
 #   - nothing is published on the host, so the chaos stack can run beside `make up`.
 
 x-chaos-config: &chaos-config

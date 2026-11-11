@@ -15,7 +15,7 @@ cd "$(dirname "$0")/.."
 
 project=jobqueue-chaos
 compose=(docker compose -p "$project" -f docker-compose.yml -f docker-compose.chaos.yml)
-stack=(postgres toxiproxy migrate api dispatcher worker-1 worker-2)
+stack=(postgres toxiproxy migrate api dispatcher worker-1 worker-2 mockshop)
 
 runs=""
 seed=""
