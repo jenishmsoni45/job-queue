@@ -39,6 +39,10 @@ x-app-healthcheck: &app-healthcheck
 services:
   postgres:
     image: postgres:16.15-trixie@sha256:f9a7b9ebf6f56201f949db745e47bc423c0f0f8294bafe991cc10bf74b029657
+    # More than the default 100 connections: `make test` runs its packages in parallel, each
+    # test database with its own pool, and the webhook and Q4 tests are deliberately concurrent.
+    # Durability settings stay at their defaults (design §13).
+    command: ["postgres", "-c", "max_connections=300"]
     environment:
       POSTGRES_USER: queue
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env (copy .env.example)}
