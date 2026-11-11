@@ -24,7 +24,6 @@
 //	QUEUED_PRUNE_INTERVAL_MS  dispatcher: pruner interval (60000)
 //	QUEUED_COMPLETED_RETENTION_MS  dispatcher: keep completed jobs this long (86400000, 24 h)
 //	QUEUED_DISCARDED_RETENTION_MS  dispatcher: keep discarded jobs this long after discard (86400000, 24 h)
-//	QUEUED_DEDUPE_WINDOW_MS   dispatcher: keep dedupe keys this long (604800000, 7 days)
 //	QUEUED_BACKOFF_BASE_MS    worker: retry backoff base (2000)
 //	QUEUED_BACKOFF_CAP_MS     worker: retry backoff cap (300000)
 //	QUEUED_DRAIN_MS           worker: on SIGTERM, how long in-flight runs may finish (8000)
@@ -182,10 +181,10 @@ func loadSettings(getenv func(string) string) (settings, error) {
 	s.longPoll = ms("QUEUED_CLAIM_TIMEOUT_MS", 25_000)
 	s.reaperScan = ms("QUEUED_REAPER_SCAN_MS", 5_000)
 	s.pruneInterval = ms("QUEUED_PRUNE_INTERVAL_MS", 60_000)
+	// The dedupe window comes from the config file (D-050); see retention.
 	s.retention = store.Retention{
-		Completed:  ms("QUEUED_COMPLETED_RETENTION_MS", 24*60*60*1000),
-		Discarded:  ms("QUEUED_DISCARDED_RETENTION_MS", 24*60*60*1000),
-		DedupeKeys: ms("QUEUED_DEDUPE_WINDOW_MS", 7*24*60*60*1000),
+		Completed: ms("QUEUED_COMPLETED_RETENTION_MS", 24*60*60*1000),
+		Discarded: ms("QUEUED_DISCARDED_RETENTION_MS", 24*60*60*1000),
 	}
 	s.backoff = queue.Backoff{Base: ms("QUEUED_BACKOFF_BASE_MS", 2_000), Cap: ms("QUEUED_BACKOFF_CAP_MS", 300_000)}
 	s.drain = ms("QUEUED_DRAIN_MS", 8_000)
@@ -292,7 +291,7 @@ func runDispatcher(ctx context.Context, addr string, s settings, cfg *config.Fil
 		StandbyRetry:   time.Second,
 		PruneInterval:  s.pruneInterval,
 		PruneBatch:     5_000, // design §9
-		Retention:      s.retention,
+		Retention:      retention(s, cfg),
 		Log:            log,
 	})
 	if err != nil {
@@ -312,6 +311,15 @@ func runDispatcher(ctx context.Context, addr string, s settings, cfg *config.Fil
 	cancel()
 	<-done
 	return err
+}
+
+// retention is how long the pruner keeps finished rows: the environment's job
+// retention windows, and the config file's dedupe window (D-018, D-050), the
+// same window mockshop's retry horizon is checked against.
+func retention(s settings, cfg *config.File) store.Retention {
+	r := s.retention
+	r.DedupeKeys = cfg.DedupeWindow()
+	return r
 }
 
 // runWorker runs the handler pool. On SIGTERM it stops claiming and lets

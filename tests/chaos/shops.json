@@ -1,13 +1,23 @@
 {
+  "dedupe_window_ms": 604800000,
   "shops": [
-    {"id": "shop-1.chaos.test", "weight": 1, "max_concurrency": 100, "rate_per_sec": 10000, "rate_burst": 10000, "backlog_limit": 100000, "backlog_retry_after_ms": 1000},
-    {"id": "shop-2.chaos.test", "weight": 1, "max_concurrency": 100, "rate_per_sec": 10000, "rate_burst": 10000, "backlog_limit": 100000, "backlog_retry_after_ms": 1000},
-    {"id": "shop-3.chaos.test", "weight": 1, "max_concurrency": 100, "rate_per_sec": 10000, "rate_burst": 10000, "backlog_limit": 100000, "backlog_retry_after_ms": 1000},
-    {"id": "shop-4.chaos.test", "weight": 1, "max_concurrency": 100, "rate_per_sec": 10000, "rate_burst": 10000, "backlog_limit": 100000, "backlog_retry_after_ms": 1000},
-    {"id": "shop-5.chaos.test", "weight": 1, "max_concurrency": 100, "rate_per_sec": 10000, "rate_burst": 10000, "backlog_limit": 100000, "backlog_retry_after_ms": 1000}
+    {"id": "shop-1.chaos.test", "weight": 1, "max_concurrency": 100, "rate_per_sec": 10000, "rate_burst": 10000, "backlog_limit": 100000, "backlog_retry_after_ms": 1000, "mock_api_capacity": 100000, "mock_api_leak_per_sec": 100000, "webhooks_per_sec": 0},
+    {"id": "shop-2.chaos.test", "weight": 1, "max_concurrency": 100, "rate_per_sec": 10000, "rate_burst": 10000, "backlog_limit": 100000, "backlog_retry_after_ms": 1000, "mock_api_capacity": 100000, "mock_api_leak_per_sec": 100000, "webhooks_per_sec": 0},
+    {"id": "shop-3.chaos.test", "weight": 1, "max_concurrency": 100, "rate_per_sec": 10000, "rate_burst": 10000, "backlog_limit": 100000, "backlog_retry_after_ms": 1000, "mock_api_capacity": 100000, "mock_api_leak_per_sec": 100000, "webhooks_per_sec": 0},
+    {"id": "shop-4.chaos.test", "weight": 1, "max_concurrency": 100, "rate_per_sec": 10000, "rate_burst": 10000, "backlog_limit": 100000, "backlog_retry_after_ms": 1000, "mock_api_capacity": 100000, "mock_api_leak_per_sec": 100000, "webhooks_per_sec": 0},
+    {"id": "shop-5.chaos.test", "weight": 1, "max_concurrency": 100, "rate_per_sec": 10000, "rate_burst": 10000, "backlog_limit": 100000, "backlog_retry_after_ms": 1000, "mock_api_capacity": 100000, "mock_api_leak_per_sec": 100000, "webhooks_per_sec": 0}
   ],
   "kinds": [
     {"kind": "test.effect", "cost": 1, "lease_ms": 2000, "heartbeat_ms": 500, "timeout_ms": 10000, "max_attempts": 10, "max_throttles": 50, "handler_sleep_ms": 0},
     {"kind": "test.sleep", "cost": 1, "lease_ms": 30000, "heartbeat_ms": 10000, "timeout_ms": 300000, "max_attempts": 10, "max_throttles": 50, "handler_sleep_ms": 0}
-  ]
+  ],
+  "mockshop": {
+    "retry_horizon_ms": 3600000,
+    "retry_base_ms": 1000,
+    "retry_cap_ms": 60000,
+    "delivery_timeout_ms": 5000,
+    "duplicate_probability": 0,
+    "duplicate_delay_max_ms": 0,
+    "concurrent_duplicate_probability": 0
+  }
 }

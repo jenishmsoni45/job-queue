@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jenishmsoni45/job-queue/internal/config"
 	"github.com/jenishmsoni45/job-queue/internal/httpserver"
 	"github.com/jenishmsoni45/job-queue/internal/pgtest"
 	"github.com/jenishmsoni45/job-queue/internal/scheduler"
@@ -242,8 +243,7 @@ func TestSettingsDefaults(t *testing.T) {
 	if s.configPath != "/etc/queued/shops.json" || s.dispatcherURL != "http://dispatcher:8080" || s.slots != 8 ||
 		s.refresh != 250*time.Millisecond || s.longPoll != 25*time.Second || s.reaperScan != 5*time.Second ||
 		s.backoff.Base != 2*time.Second || s.backoff.Cap != 5*time.Minute || s.drain != 8*time.Second || s.testHandlers ||
-		s.pruneInterval != time.Minute || s.retention.Completed != 24*time.Hour || s.retention.Discarded != 24*time.Hour ||
-		s.retention.DedupeKeys != 7*24*time.Hour {
+		s.pruneInterval != time.Minute || s.retention.Completed != 24*time.Hour || s.retention.Discarded != 24*time.Hour {
 		t.Errorf("defaults = %+v, want the design §2 settings", s)
 	}
 }
@@ -254,17 +254,33 @@ func TestPruneSettings(t *testing.T) {
 		"QUEUED_PRUNE_INTERVAL_MS":      "1000",
 		"QUEUED_COMPLETED_RETENTION_MS": "2000",
 		"QUEUED_DISCARDED_RETENTION_MS": "3000",
-		"QUEUED_DEDUPE_WINDOW_MS":       "4000",
 	}))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if s.pruneInterval != time.Second || s.retention.Completed != 2*time.Second ||
-		s.retention.Discarded != 3*time.Second || s.retention.DedupeKeys != 4*time.Second {
+	if s.pruneInterval != time.Second || s.retention.Completed != 2*time.Second || s.retention.Discarded != 3*time.Second {
 		t.Errorf("settings = %+v", s)
 	}
-	if _, err := loadSettings(env(map[string]string{"QUEUED_DEDUPE_WINDOW_MS": "0"})); err == nil {
-		t.Error("a zero dedupe window was accepted")
+	if _, err := loadSettings(env(map[string]string{"QUEUED_COMPLETED_RETENTION_MS": "0"})); err == nil {
+		t.Error("a zero retention window was accepted")
+	}
+}
+
+// D-050: the pruner's dedupe window is the config file's, the one mockshop's
+// retry horizon is checked against, and no environment setting overrides it.
+func TestDedupeWindowComesFromTheConfigFile(t *testing.T) {
+	s, err := loadSettings(env(map[string]string{"QUEUED_DEDUPE_WINDOW_MS": "4000"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(testConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.DedupeWindowMS = 9_000_000
+	r := retention(s, cfg)
+	if r.DedupeKeys != 9_000*time.Second || r.Completed != 24*time.Hour || r.Discarded != 24*time.Hour {
+		t.Errorf("retention = %+v, want the file's dedupe window and the default job windows", r)
 	}
 }
 
