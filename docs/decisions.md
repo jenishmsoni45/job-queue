@@ -62,6 +62,7 @@ Each entry gives the question, the options considered, the decision and its cons
 | D-054 | The webhook rate in the `make up` stack | Phase 5: gap in design §12 | Decided |
 | D-055 | The throttle-storm scenario | Phase 5: optional scope (D-010) | Decided |
 | D-056 | When `loadgen` stops after the spike | Phase 5: design §17 never ends | Decided |
+| D-057 | NFR-12's warm-up window ends one tick early | Phase 5: first bench run, NFR-12 measured the spike's first tick | Decided |
 
 ---
 
@@ -822,3 +823,18 @@ Each entry gives the question, the options considered, the decision and its cons
   - A setting, `drain_max_ms`, bounds the tail if the drain never finishes.
   - `make bench` then waits until every accepted job is terminal, including the last steady ones.
 - **Why not B:** if the drain outlasted the tail, the end of the drain would have no arrivals, and the chart couldn't show the other shops recovering.
+
+## D-057 · NFR-12's warm-up window ends one tick early
+
+- **Date:** 2026-11-12 · **Phase:** 5 · **Source:** Mid-phase surprise. The first complete `make bench` failed NFR-12 for shop 1 in both runs, with a max backlog of 224 against the limit of 40.
+- **Finding:** the bench analysis takes T0 from the first arrival, which trails loadgen's own start by a few ms, and it ends the warm-up at T0 + `warmup_ms`. Loadgen starts the spike at its own start + `warmup_ms`, so the spike shop's first spike tick (about 200 jobs at 2,000 jobs/s and a 100 ms tick) was enqueued about 5 ms before the window ended and was counted as warm-up backlog. The raw data of both runs show 224 shop-1 jobs in that tick. Every other shop peaked at 8–12 jobs.
+- **Options:**
+  - A. End the NFR-12 window one `tick_ms` before T0 + `warmup_ms`.
+  - B. Pass loadgen's start time into the analysis and anchor the phases to it.
+  - C. Leave it, and report NFR-12 as failed.
+- **Decision:** A (the user chose to fix the analysis).
+  - Only the analysis changes. The target (a backlog of at most 2 s of arrivals) and the buckets (D-051) are unchanged.
+  - T0 trails loadgen's start by less than one tick, so a window that ends one tick early keeps the spike's first tick out, and it drops at most one tick of steady arrivals.
+  - `internal/bench` has a test with a 200-job tick 5 ms before the end (passes) and one a full tick earlier (fails).
+- **Why not B:** loadgen's clock and the database clock are different processes, and the margin would be a few ms.
+- **Why not C:** it would fail a baseline check on a spike that has not started yet.

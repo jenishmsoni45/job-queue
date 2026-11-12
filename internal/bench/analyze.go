@@ -216,6 +216,7 @@ func Analyze(in Input) (Run, error) {
 		}
 	}
 	warmupEnd, spikeEnd := r.T0.Add(warmup), r.T0.Add(warmup+spike)
+	nfr12End := warmupEnd.Add(-time.Duration(lg.TickMS) * time.Millisecond)
 	firstSpikeBucket, spikeBuckets := int(warmup/BucketSize), int(spike/BucketSize)
 
 	byShop := map[string][]Job{}
@@ -292,8 +293,12 @@ func Analyze(in Input) (Run, error) {
 		}
 		r.Series[shop.ID] = series(perBucket)
 
-		// NFR-12: the warm-up backlog, swept exactly.
-		s.WarmupMaxBL = maxBacklog(jobs, warmupEnd)
+		// NFR-12: the warm-up backlog, swept exactly. T0 is the first arrival, which
+		// trails loadgen's own start by less than a tick, so the spike shop's first
+		// spike tick can land just before T0+warmup. The window therefore ends one
+		// tick early, which keeps that tick out and drops at most one tick of
+		// steady arrivals (D-057).
+		s.WarmupMaxBL = maxBacklog(jobs, nfr12End)
 		ok12 := s.WarmupMaxBL <= r.NFR12.Limit
 		r.NFR12.Pass = r.NFR12.Pass && ok12
 		r.NFR12.Shops = append(r.NFR12.Shops, NFR12Shop{ID: shop.ID, MaxBacklog: s.WarmupMaxBL, Pass: ok12})

@@ -177,6 +177,29 @@ func TestNFR12(t *testing.T) {
 	}
 }
 
+// NFR-12 must not count the spike shop's first spike tick. T0 trails loadgen's
+// start, so that tick is enqueued a few ms before T0+warmup (D-057); a backlog
+// from an earlier tick still counts.
+func TestNFR12IgnoresTheFirstSpikeTick(t *testing.T) {
+	tick := time.Duration(testConfig().Loadgen.TickMS) * time.Millisecond
+	in := steadyRun(5*time.Millisecond, 5*time.Millisecond)
+	var g gen
+	g.next = 10_000
+	for range 200 { // the first spike tick, 5 ms before the warm-up ends
+		in.Jobs = append(in.Jobs, g.job("steady.test", 20*time.Second-5*time.Millisecond, time.Second, time.Millisecond))
+	}
+	if r := analyze(t, in); !r.NFR12.Pass {
+		t.Errorf("NFR-12 counted the first spike tick: %+v", r.NFR12)
+	}
+	in = steadyRun(5*time.Millisecond, 5*time.Millisecond)
+	for range 200 { // a backlog from a tick before the last one still fails
+		in.Jobs = append(in.Jobs, g.job("steady.test", 20*time.Second-tick-5*time.Millisecond, time.Second, time.Millisecond))
+	}
+	if r := analyze(t, in); r.NFR12.Pass {
+		t.Errorf("NFR-12 passed with a 200-job backlog a tick before the end: %+v", r.NFR12)
+	}
+}
+
 // maxBacklog counts a job from its enqueue until it is terminal, counts an
 // enqueue before a completion at the same instant, ignores what happens after
 // the end, and counts jobs still unfinished at the end.
