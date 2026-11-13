@@ -1,7 +1,9 @@
 package store_test
 
 import (
+	"encoding/json"
 	"fmt"
+	"slices"
 	"testing"
 	"time"
 
@@ -234,4 +236,83 @@ func TestClaimEndFull(t *testing.T) {
 	if out := claimFor(t, env, 0, store.ClaimSpec{}); len(out.Jobs) != 0 {
 		t.Fatalf("claimed %d with no owners", len(out.Jobs))
 	}
+}
+
+// The claim queries must be answered from jobs_queued_shop however the planner's
+// statistics look. Statistics cover completed rows too, so with every shop well
+// represented among the finished jobs and one shop flooding the queue, the planner
+// believes a small shop's queued jobs are common and, given shop_id = ANY, walks
+// jobs_queued_fifo past the flood (5 ms against 0.04 ms at 50,000 queued jobs); and it
+// plans the snapshot's "has a queued job" test as a sequential scan of jobs (28 ms
+// per refresh in the Black Friday run). A 50,000-job backlog is the bench's limit.
+func TestClaimAndSnapshotQueriesUseTheShopIndexUnderSkew(t *testing.T) {
+	t.Parallel()
+	env := queuetest.New(t, nil)
+	ctx := t.Context()
+	exec := func(q string, args ...any) {
+		t.Helper()
+		if _, err := env.Pool.Exec(ctx, q, args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// 20,000 finished jobs for each of the two shops, a flooded shop A and a quiet shop B
+	// whose one queued job is newer than the whole backlog.
+	exec(`INSERT INTO jobs (shop_id, kind, cost, payload, state, run_at, first_runnable_at, completed_at, claim_seq)
+	      SELECT s, $2, 1, '{}', 'completed', now() - interval '1 day', now() - interval '1 day', now() - interval '1 day', 1
+	        FROM unnest($1::text[]) s, generate_series(1, 20000)`, []string{shopA, shopB}, testkinds.Sleep)
+	exec(`INSERT INTO jobs (shop_id, kind, cost, payload, state, run_at, first_runnable_at)
+	      SELECT $1, $2, 1, '{}', 'queued', now() - interval '1 hour' + g * interval '1 millisecond',
+	             now() - interval '1 hour' + g * interval '1 millisecond'
+	        FROM generate_series(1, 50000) g`, shopA, testkinds.Sleep)
+	exec(`INSERT INTO jobs (shop_id, kind, cost, payload, state, run_at, first_runnable_at)
+	      VALUES ($1, $2, 1, '{}', 'queued', now() - interval '1 second', now() - interval '1 second')`, shopB, testkinds.Sleep)
+	exec(`ANALYZE jobs`)
+
+	// The claim for the quiet shop, which DRR sends for the shop whose turn it is.
+	out := claimFor(t, env, 1, store.ClaimSpec{Shops: []string{shopB}})
+	if len(out.Jobs) != 1 || out.Jobs[0].Shop != shopB {
+		t.Fatalf("claimed %+v, want shop B's one job", out.Jobs)
+	}
+
+	// Shop B's job was claimed above; queue another so the claim's plan has a row to find.
+	env.Enqueue(t, shopB, testkinds.Sleep, nil)
+	cand := scans(t, env, store.CandidatesSQL(1), 1, shopB)
+	if !slices.Contains(cand, "jobs_queued_shop") || slices.Contains(cand, "jobs_queued_fifo") || slices.Contains(cand, "Seq Scan on jobs") {
+		t.Errorf("the single-shop claim statement is planned on %v, want jobs_queued_shop", cand)
+	}
+	snap := scans(t, env, store.SnapshotShopsSQL)
+	if !slices.Contains(snap, "jobs_queued_shop") || slices.Contains(snap, "Seq Scan on jobs") {
+		t.Errorf("the snapshot statement is planned on %v, want jobs_queued_shop and no sequential scan of jobs", snap)
+	}
+}
+
+// scans EXPLAINs a statement and lists its scans: the index name of an index scan,
+// and "Seq Scan on <table>" for a sequential one.
+func scans(t *testing.T, env *queuetest.Env, query string, args ...any) []string {
+	t.Helper()
+	var js string
+	if err := env.Pool.QueryRow(t.Context(), `EXPLAIN (FORMAT JSON) `+query, args...).Scan(&js); err != nil {
+		t.Fatal(err)
+	}
+	var top []struct{ Plan map[string]any }
+	if err := json.Unmarshal([]byte(js), &top); err != nil || len(top) != 1 {
+		t.Fatalf("plan %s: %v", js, err)
+	}
+	var found []string
+	var walk func(node map[string]any)
+	walk = func(node map[string]any) {
+		switch typ, _ := node["Node Type"].(string); typ {
+		case "Seq Scan":
+			found = append(found, fmt.Sprintf("Seq Scan on %v", node["Relation Name"]))
+		case "Index Scan", "Index Only Scan", "Bitmap Index Scan":
+			found = append(found, fmt.Sprint(node["Index Name"]))
+		}
+		if kids, ok := node["Plans"].([]any); ok {
+			for _, k := range kids {
+				walk(k.(map[string]any))
+			}
+		}
+	}
+	walk(top[0].Plan)
+	return found
 }

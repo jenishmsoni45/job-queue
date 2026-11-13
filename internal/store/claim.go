@@ -144,19 +144,15 @@ type candidate struct {
 // claimCandidates locks up to n queued, runnable jobs, oldest first, skipping
 // rows another transaction holds. With shops, only their jobs are taken.
 func claimCandidates(ctx context.Context, tx pgx.Tx, n int, shops []string) ([]candidate, error) {
-	const head = `SELECT id, shop_id, cost FROM jobs WHERE state = 'queued' AND run_at <= statement_timestamp()`
-	const tail = ` ORDER BY run_at, id LIMIT $1 FOR NO KEY UPDATE SKIP LOCKED`
-	var (
-		rows pgx.Rows
-		err  error
-	)
-	// Two statements rather than one with an optional filter, so the planner can
-	// use jobs_queued_shop for a claim that names its shops.
-	if len(shops) == 0 {
-		rows, err = tx.Query(ctx, head+tail, n)
-	} else {
-		rows, err = tx.Query(ctx, head+` AND shop_id = ANY($2)`+tail, n, shops)
+	args := []any{n}
+	switch len(shops) {
+	case 0:
+	case 1:
+		args = append(args, shops[0])
+	default:
+		args = append(args, shops)
 	}
+	rows, err := tx.Query(ctx, candidatesSQL(len(shops)), args...)
 	if err != nil {
 		return nil, fmt.Errorf("store: claim candidates: %w", err)
 	}
@@ -168,6 +164,32 @@ func claimCandidates(ctx context.Context, tx pgx.Tx, n int, shops []string) ([]c
 		return nil, fmt.Errorf("store: claim candidates: %w", err)
 	}
 	return cands, nil
+}
+
+// candidatesSQL is the candidates statement for a claim that names shopCount
+// shops. $1 is the limit, and $2 the shop (one shop) or the shops (several).
+//
+// Separate statements rather than one with an optional filter, so the planner
+// can use jobs_queued_shop for a claim that names its shops. The planner's
+// statistics span completed rows too, so it believes a small shop's jobs are common
+// among the queued ones, and for shop_id = $2 or = ANY($2) it walks jobs_queued_fifo
+// past a flooding shop's whole backlog to find them (5 ms against 0.04 ms with a
+// 50,000 job backlog), most of all just after a flood, before ANALYZE has caught up.
+// A claim for one shop, which is every DRR claim, therefore states the shop as a
+// range and orders by shop_id first. The planner can't fold that into a constant,
+// so only jobs_queued_shop supplies the order without a sort. The rows are the same,
+// as they all belong to one shop. Several shops (FIFO) need the oldest across them.
+func candidatesSQL(shopCount int) string {
+	const head = `SELECT id, shop_id, cost FROM jobs WHERE state = 'queued' AND run_at <= statement_timestamp()`
+	const tail = ` LIMIT $1 FOR NO KEY UPDATE SKIP LOCKED`
+	switch shopCount {
+	case 0:
+		return head + ` ORDER BY run_at, id` + tail
+	case 1:
+		return head + ` AND shop_id >= $2 AND shop_id <= $2 ORDER BY shop_id, run_at, id` + tail
+	default:
+		return head + ` AND shop_id = ANY($2) ORDER BY run_at, id` + tail
+	}
 }
 
 // shopRoom takes each candidate shop's claim lock, in shop-ID order, and returns
@@ -261,18 +283,27 @@ type ShopSnapshot struct {
 	Throttled bool
 }
 
+// snapshotShopsSQL is SnapshotShops's statement. A shop is runnable when its oldest queued
+// job's run_at has passed. That is asked of jobs_queued_shop alone, with the shop as a
+// range and an order by shop_id first (see candidatesSQL), because the equivalent EXISTS
+// is planned as a sequential scan of jobs, and min(run_at) as a scan of jobs_queued_fifo
+// that discards the flooding shop's backlog. Each costs tens of milliseconds on every
+// refresh once the table is large or the backlog skewed.
+const snapshotShopsSQL = `
+		SELECT s.id, s.weight, s.max_concurrency, s.rate_per_sec, s.rate_burst,
+		       (SELECT count(*) FROM jobs j WHERE j.shop_id = s.id AND j.state = 'running'),
+		       coalesce((SELECT j.run_at FROM jobs j WHERE j.state = 'queued' AND j.shop_id >= s.id AND j.shop_id <= s.id
+		                 ORDER BY j.shop_id, j.run_at LIMIT 1) <= statement_timestamp(), false),
+		       coalesce(st.throttled_until > statement_timestamp(), false)
+		  FROM shops s JOIN shop_state st ON st.shop_id = s.id
+		 ORDER BY s.id`
+
 // SnapshotShops reads every shop's settings and state in one statement, so
 // "now" is one instant for all of them. Both time comparisons use the database
 // clock, statement_timestamp(), as the claim transaction does. The result only
 // hints at what a claim can do: the claim transaction is the authority (design §6.1).
 func SnapshotShops(ctx context.Context, db DB) ([]ShopSnapshot, error) {
-	rows, err := db.Query(ctx, `
-		SELECT s.id, s.weight, s.max_concurrency, s.rate_per_sec, s.rate_burst,
-		       (SELECT count(*) FROM jobs j WHERE j.shop_id = s.id AND j.state = 'running'),
-		       EXISTS (SELECT 1 FROM jobs j WHERE j.shop_id = s.id AND j.state = 'queued' AND j.run_at <= statement_timestamp()),
-		       coalesce(st.throttled_until > statement_timestamp(), false)
-		  FROM shops s JOIN shop_state st ON st.shop_id = s.id
-		 ORDER BY s.id`)
+	rows, err := db.Query(ctx, snapshotShopsSQL)
 	if err != nil {
 		return nil, fmt.Errorf("store: snapshot shops: %w", err)
 	}

@@ -63,6 +63,7 @@ Each entry gives the question, the options considered, the decision and its cons
 | D-055 | The throttle-storm scenario | Phase 5: optional scope (D-010) | Decided |
 | D-056 | When `loadgen` stops after the spike | Phase 5: design §17 never ends | Decided |
 | D-057 | NFR-12's warm-up window ends one tick early | Phase 5: first bench run, NFR-12 measured the spike's first tick | Decided |
+| D-058 | Plan-proof claim and snapshot queries | Phase 5: first bench run, NFR-9 failed | Decided |
 
 ---
 
@@ -838,3 +839,22 @@ Each entry gives the question, the options considered, the decision and its cons
   - `internal/bench` has a test with a 200-job tick 5 ms before the end (passes) and one a full tick earlier (fails).
 - **Why not B:** loadgen's clock and the database clock are different processes, and the margin would be a few ms.
 - **Why not C:** it would fail a baseline check on a spike that has not started yet.
+
+## D-058 · Plan-proof claim and snapshot queries
+
+- **Date:** 2026-11-12 · **Phase:** 5 · **Source:** Mid-phase surprise. The first complete `make bench` failed NFR-9: shops 2–10's p99 queue wait in the spike was 78–93 s against bounds of about 200 ms, DRR completed 169 jobs/s against FIFO's 413, and DRR's drain timed out.
+- **Finding:** measured on the bench stack with the real `loadgen`, not assumed.
+  - The claim for a small shop (shop 2's one queued job, newer than shop 1's 50,000-job backlog) was planned as a scan of `jobs_queued_fifo` that discarded 49,837 rows: 1,599 buffers and 3.9 ms, against 0.04 ms on `jobs_queued_shop`. It was the active query in 35 of 60 samples, and Postgres sat at 100% of one core from spike onset.
+  - The dispatcher's refresh planned its per-shop "has a runnable job" test as a sequential scan of `jobs` (28 ms per refresh live, 165 ms in a worse heap layout).
+  - Both are planner misestimates: its statistics span completed rows, so it thinks a small shop's queued jobs are common. They are worst just after a flood, before ANALYZE catches up, which is when NFR-9 is measured.
+  - Raising the DRR quantum, the first guess, did not help: a quantum of 10 made the spike's p99 worse (250–475 ms against 70–250 ms).
+- **Options:**
+  - A. State the shop as a range, `shop_id >= $2 AND shop_id <= $2`, and order by `shop_id` first, in the single-shop claim and in the snapshot's runnable test. Only `jobs_queued_shop` then supplies the order without a sort, whatever the statistics say.
+  - B. Add extended statistics on (state, shop_id) in a migration.
+  - C. Raise the DRR quantum.
+- **Decision:** A (the user asked for the diagnosis and the fix; the design's SQL, `WHERE shop_id = $shop`, selects the same rows).
+  - Targets, requirements and design docs are unchanged. FIFO's multi-shop claim is unchanged.
+  - `internal/store` has a test that builds a flooding shop beside a quiet one, runs ANALYZE, and checks both statements' plans use `jobs_queued_shop` and no sequential scan of `jobs`.
+  - On the scaled bench (60 s spike, 5 CPUs) shops 2–10's p99 per 10 s bucket went from stalls of 1–2.5 s to 67–176 ms, except the first spike bucket (245 ms against 208 ms). Total throughput rose from about 280–340 to about 500 jobs/s. The full `make bench` still has to confirm it.
+- **Why not B:** the statistics only help after ANALYZE, which is the moment they are wrong, and it needs a schema change and a design edit.
+- **Why not C:** measured to be worse, and it loosens the Q6 tolerance (D-026).
