@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/jenishmsoni45/job-queue/internal/config"
 	"github.com/jenishmsoni45/job-queue/internal/queuetest"
 	"github.com/jenishmsoni45/job-queue/internal/store"
@@ -238,14 +240,13 @@ func TestClaimEndFull(t *testing.T) {
 	}
 }
 
-// The claim queries must be answered from jobs_queued_shop however the planner's
-// statistics look. Statistics cover completed rows too, so with every shop well
-// represented among the finished jobs and one shop flooding the queue, the planner
-// believes a small shop's queued jobs are common and, given shop_id = ANY, walks
-// jobs_queued_fifo past the flood (5 ms against 0.04 ms at 50,000 queued jobs); and it
-// plans the snapshot's "has a queued job" test as a sequential scan of jobs (28 ms
-// per refresh in the Black Friday run). A 50,000-job backlog is the bench's limit.
-func TestClaimAndSnapshotQueriesUseTheShopIndexUnderSkew(t *testing.T) {
+// The claim and the snapshot must be answered from jobs_queued_shop even when the
+// planner's statistics are stale, which they are just after a flood (D-059). The table
+// is analysed while it holds only finished jobs, then a flooding shop queues 45,000 jobs
+// and a quiet shop one, with no ANALYZE after. With sorts allowed the planner believes
+// the quiet shop has about one queued job and picks jobs_queued_fifo plus a top-N Sort,
+// which reads the whole flood (9,157 buffers in the snapshot, against 41).
+func TestClaimAndSnapshotQueriesUseTheShopIndexWithStaleStatistics(t *testing.T) {
 	t.Parallel()
 	env := queuetest.New(t, nil)
 	ctx := t.Context()
@@ -255,34 +256,31 @@ func TestClaimAndSnapshotQueriesUseTheShopIndexUnderSkew(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	// 20,000 finished jobs for each of the two shops, a flooded shop A and a quiet shop B
-	// whose one queued job is newer than the whole backlog.
 	exec(`INSERT INTO jobs (shop_id, kind, cost, payload, state, run_at, first_runnable_at, completed_at, claim_seq)
 	      SELECT s, $2, 1, '{}', 'completed', now() - interval '1 day', now() - interval '1 day', now() - interval '1 day', 1
-	        FROM unnest($1::text[]) s, generate_series(1, 20000)`, []string{shopA, shopB}, testkinds.Sleep)
+	        FROM unnest($1::text[]) s, generate_series(1, 2400)`, []string{shopA, shopB}, testkinds.Sleep)
+	exec(`ANALYZE jobs`)
 	exec(`INSERT INTO jobs (shop_id, kind, cost, payload, state, run_at, first_runnable_at)
-	      SELECT $1, $2, 1, '{}', 'queued', now() - interval '1 hour' + g * interval '1 millisecond',
-	             now() - interval '1 hour' + g * interval '1 millisecond'
-	        FROM generate_series(1, 50000) g`, shopA, testkinds.Sleep)
+	      SELECT $1, $2, 1, '{}', 'queued', now() - interval '30 seconds' + g * interval '1 millisecond',
+	             now() - interval '30 seconds' + g * interval '1 millisecond'
+	        FROM generate_series(1, 45000) g`, shopA, testkinds.Sleep)
 	exec(`INSERT INTO jobs (shop_id, kind, cost, payload, state, run_at, first_runnable_at)
 	      VALUES ($1, $2, 1, '{}', 'queued', now() - interval '1 second', now() - interval '1 second')`, shopB, testkinds.Sleep)
-	exec(`ANALYZE jobs`)
 
-	// The claim for the quiet shop, which DRR sends for the shop whose turn it is.
+	// The claim for the quiet shop, which DRR sends for the shop whose turn it is, still works.
 	out := claimFor(t, env, 1, store.ClaimSpec{Shops: []string{shopB}})
 	if len(out.Jobs) != 1 || out.Jobs[0].Shop != shopB {
 		t.Fatalf("claimed %+v, want shop B's one job", out.Jobs)
 	}
+	env.Enqueue(t, shopB, testkinds.Sleep, nil) // so the plan below has a row to find
 
-	// Shop B's job was claimed above; queue another so the claim's plan has a row to find.
-	env.Enqueue(t, shopB, testkinds.Sleep, nil)
 	cand := scans(t, env, store.CandidatesSQL(1), 1, shopB)
-	if !slices.Contains(cand, "jobs_queued_shop") || slices.Contains(cand, "jobs_queued_fifo") || slices.Contains(cand, "Seq Scan on jobs") {
-		t.Errorf("the single-shop claim statement is planned on %v, want jobs_queued_shop", cand)
+	if !slices.Contains(cand, "jobs_queued_shop") || slices.Contains(cand, "jobs_queued_fifo") || slices.Contains(cand, "Sort") {
+		t.Errorf("the single-shop claim statement is planned on %v, want jobs_queued_shop alone", cand)
 	}
 	snap := scans(t, env, store.SnapshotShopsSQL)
-	if !slices.Contains(snap, "jobs_queued_shop") || slices.Contains(snap, "Seq Scan on jobs") {
-		t.Errorf("the snapshot statement is planned on %v, want jobs_queued_shop and no sequential scan of jobs", snap)
+	if !slices.Contains(snap, "jobs_queued_shop") || slices.Contains(snap, "jobs_queued_fifo") || slices.Contains(snap, "Sort") {
+		t.Errorf("the snapshot statement is planned on %v, want jobs_queued_shop alone", snap)
 	}
 }
 
@@ -291,7 +289,14 @@ func TestClaimAndSnapshotQueriesUseTheShopIndexUnderSkew(t *testing.T) {
 func scans(t *testing.T, env *queuetest.Env, query string, args ...any) []string {
 	t.Helper()
 	var js string
-	if err := env.Pool.QueryRow(t.Context(), `EXPLAIN (FORMAT JSON) `+query, args...).Scan(&js); err != nil {
+	err := pgx.BeginFunc(t.Context(), env.Pool, func(tx pgx.Tx) error {
+		// What store does before these statements: noPlannerSort.
+		if _, err := tx.Exec(t.Context(), `SET LOCAL enable_sort = off`); err != nil {
+			return err
+		}
+		return tx.QueryRow(t.Context(), `EXPLAIN (FORMAT JSON) `+query, args...).Scan(&js)
+	})
+	if err != nil {
 		t.Fatal(err)
 	}
 	var top []struct{ Plan map[string]any }
@@ -304,6 +309,8 @@ func scans(t *testing.T, env *queuetest.Env, query string, args ...any) []string
 		switch typ, _ := node["Node Type"].(string); typ {
 		case "Seq Scan":
 			found = append(found, fmt.Sprintf("Seq Scan on %v", node["Relation Name"]))
+		case "Sort", "Incremental Sort":
+			found = append(found, "Sort")
 		case "Index Scan", "Index Only Scan", "Bitmap Index Scan":
 			found = append(found, fmt.Sprint(node["Index Name"]))
 		}

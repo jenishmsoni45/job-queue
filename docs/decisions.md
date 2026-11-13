@@ -64,6 +64,7 @@ Each entry gives the question, the options considered, the decision and its cons
 | D-056 | When `loadgen` stops after the spike | Phase 5: design §17 never ends | Decided |
 | D-057 | NFR-12's warm-up window ends one tick early | Phase 5: first bench run, NFR-12 measured the spike's first tick | Decided |
 | D-058 | Plan-proof claim and snapshot queries | Phase 5: first bench run, NFR-9 failed | Decided |
+| D-059 | Planner sorts off for the claim and the snapshot | Phase 5: second bench run, NFR-9 failed at spike onset | Decided |
 
 ---
 
@@ -853,8 +854,29 @@ Each entry gives the question, the options considered, the decision and its cons
   - B. Add extended statistics on (state, shop_id) in a migration.
   - C. Raise the DRR quantum.
 - **Decision:** A (the user asked for the diagnosis and the fix; the design's SQL, `WHERE shop_id = $shop`, selects the same rows).
+  - **Superseded in part by D-059:** the range-and-order form alone is not plan-proof. It holds only while the planner's statistics are fresh.
   - Targets, requirements and design docs are unchanged. FIFO's multi-shop claim is unchanged.
   - `internal/store` has a test that builds a flooding shop beside a quiet one, runs ANALYZE, and checks both statements' plans use `jobs_queued_shop` and no sequential scan of `jobs`.
   - On the scaled bench (60 s spike, 5 CPUs) shops 2–10's p99 per 10 s bucket went from stalls of 1–2.5 s to 67–176 ms, except the first spike bucket (245 ms against 208 ms). Total throughput rose from about 280–340 to about 500 jobs/s. The full `make bench` still has to confirm it.
 - **Why not B:** the statistics only help after ANALYZE, which is the moment they are wrong, and it needs a schema change and a design edit.
 - **Why not C:** measured to be worse, and it loosens the Q6 tolerance (D-026).
+
+## D-059 · Planner sorts off for the claim and the snapshot
+
+- **Date:** 2026-11-13 · **Phase:** 5 · **Source:** Mid-phase surprise. After D-058, a full `make bench` passed NFR-11, NFR-12 and every validity check, and DRR matched FIFO's throughput (417 jobs/s each). NFR-9 still failed, but only at spike onset: the four buckets from 120 s to 160 s had p99 up to 16.9 s, and all 26 later buckets passed for every shop.
+- **Finding:** measured on the bench stack with a 120 s warm-up and a 40 s spike.
+  - While shop 1's flood was admitted (2,000 jobs/s until the 50,000-job backlog limit), total completions fell from about 400 to about 35 jobs/s, and recovered the moment enqueues were shed. One backend, the dispatcher's, used 296 of 323 CPU ticks in 3 s.
+  - `auto_explain` caught the snapshot D-058 wrote as a scan of `jobs_queued_fifo` plus a top-N Sort, once per shop: 18,392 buffers and 46 ms. The planner's statistics were stale just after the flood, so it estimated one matching row, and a Sort of one row looks cheap. The dispatcher runs the snapshot on every wake, and every enqueue wakes it.
+  - The claim's candidates statement is planned the same way under stale statistics (a Sort over `jobs_queued_fifo`, 635 buffers against 4).
+  - A Postgres-only stack that reproduces "ANALYZE ran before the flood" shows `SET LOCAL enable_sort = off` gives `jobs_queued_shop` alone for both: 41 buffers and 0.05 ms for the snapshot, 0.034 ms for the claim.
+- **Options:**
+  - A. Keep D-058's statements, and run the claim transaction and the snapshot with `SET LOCAL enable_sort = off`.
+  - B. Replace the snapshot's "has a runnable job" test with `shop_state.backlog`. This changes design §6.1.
+  - C. Extended statistics and more frequent ANALYZE on `jobs`. They lag the flood by the autovacuum interval, which is when they are wrong.
+- **Decision:** A (the user asked for the diagnosis, and this follows from it).
+  - Statements, rows, locks and fencing are unchanged. A disabled Sort is costed, not forbidden, so a statement with no other plan still runs. FIFO's claim runs in the same transaction setup (AC-9.3).
+  - The snapshot now runs in a one-statement transaction so the setting can be local.
+  - `internal/store` has a test that analyses the table while it holds only finished jobs, adds a 45,000-job flood and one quiet-shop job without a new ANALYZE, and checks both statements' plans use `jobs_queued_shop` alone. It fails when sorts are allowed.
+  - On the bench stack with a 120 s warm-up and a 40 s spike, shops 2–10 stayed at 180–194 jobs/s through onset and the four onset buckets' worst p99 was 53–85 ms against a bound of 190 ms. The full `make bench` still has to confirm it.
+- **Why not B:** a design change that gives up the check for a queued job whose `run_at` has passed.
+- **Why not C:** see C above.

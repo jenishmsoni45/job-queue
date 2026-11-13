@@ -78,6 +78,9 @@ func ClaimFor(ctx context.Context, db DB, owners []string, spec ClaimSpec) (Clai
 	var out ClaimOutcome
 	err := pgx.BeginFunc(ctx, db, func(tx pgx.Tx) error {
 		out = ClaimOutcome{}
+		if err := noPlannerSort(ctx, tx); err != nil {
+			return err
+		}
 		cands, err := claimCandidates(ctx, tx, len(owners), spec.Shops)
 		if err != nil {
 			return err
@@ -166,19 +169,33 @@ func claimCandidates(ctx context.Context, tx pgx.Tx, n int, shops []string) ([]c
 	return cands, nil
 }
 
+// noPlannerSort stops the planner from choosing an explicit Sort for the rest of the
+// transaction. The statements below are written so that jobs_queued_shop supplies their
+// order and a Sort is never needed; without this the planner can still pick
+// jobs_queued_fifo plus a top-N Sort, and it does exactly when its statistics are stale.
+// They go stale at the moment a flood arrives, which is when a claim costs the most: it
+// then reads the whole queued index for every shop (9,157 buffers and 4 ms against 41
+// buffers and 0.05 ms at a 45,000 job backlog), and the dispatcher, which asks on every
+// wake, saturates a core (D-059). A disabled node is not forbidden, only costed at
+// 10^10, so a statement with no other plan still runs.
+func noPlannerSort(ctx context.Context, tx pgx.Tx) error {
+	if _, err := tx.Exec(ctx, `SET LOCAL enable_sort = off`); err != nil {
+		return fmt.Errorf("store: disable planner sorts: %w", err)
+	}
+	return nil
+}
+
 // candidatesSQL is the candidates statement for a claim that names shopCount
 // shops. $1 is the limit, and $2 the shop (one shop) or the shops (several).
 //
-// Separate statements rather than one with an optional filter, so the planner
-// can use jobs_queued_shop for a claim that names its shops. The planner's
-// statistics span completed rows too, so it believes a small shop's jobs are common
-// among the queued ones, and for shop_id = $2 or = ANY($2) it walks jobs_queued_fifo
-// past a flooding shop's whole backlog to find them (5 ms against 0.04 ms with a
-// 50,000 job backlog), most of all just after a flood, before ANALYZE has caught up.
-// A claim for one shop, which is every DRR claim, therefore states the shop as a
-// range and orders by shop_id first. The planner can't fold that into a constant,
-// so only jobs_queued_shop supplies the order without a sort. The rows are the same,
-// as they all belong to one shop. Several shops (FIFO) need the oldest across them.
+// Separate statements rather than one with an optional filter, so the planner can use
+// jobs_queued_shop for a claim that names its shops. A claim for one shop, which is every
+// DRR claim, states the shop as a range and orders by shop_id first. The planner can't
+// fold that into a constant, so jobs_queued_shop is the only index that supplies the
+// order, and with sorts off (noPlannerSort) it is the only plan. (With shop_id = $2 the
+// planner walks jobs_queued_fifo past a flooding shop's whole backlog to find a small
+// shop's job: 5 ms against 0.04 ms at 50,000 queued jobs.) The rows are the same, as they
+// all belong to one shop. Several shops (FIFO) need the oldest across them.
 func candidatesSQL(shopCount int) string {
 	const head = `SELECT id, shop_id, cost FROM jobs WHERE state = 'queued' AND run_at <= statement_timestamp()`
 	const tail = ` LIMIT $1 FOR NO KEY UPDATE SKIP LOCKED`
@@ -285,10 +302,11 @@ type ShopSnapshot struct {
 
 // snapshotShopsSQL is SnapshotShops's statement. A shop is runnable when its oldest queued
 // job's run_at has passed. That is asked of jobs_queued_shop alone, with the shop as a
-// range and an order by shop_id first (see candidatesSQL), because the equivalent EXISTS
-// is planned as a sequential scan of jobs, and min(run_at) as a scan of jobs_queued_fifo
-// that discards the flooding shop's backlog. Each costs tens of milliseconds on every
-// refresh once the table is large or the backlog skewed.
+// range and an order by shop_id first (see candidatesSQL), and it runs with planner sorts
+// off (noPlannerSort). The equivalent EXISTS is planned as a sequential scan of jobs, and
+// min(run_at) as a scan of jobs_queued_fifo that discards the flooding shop's backlog.
+// Each costs tens of milliseconds on every refresh once the table is large or the
+// backlog skewed.
 const snapshotShopsSQL = `
 		SELECT s.id, s.weight, s.max_concurrency, s.rate_per_sec, s.rate_burst,
 		       (SELECT count(*) FROM jobs j WHERE j.shop_id = s.id AND j.state = 'running'),
@@ -303,13 +321,21 @@ const snapshotShopsSQL = `
 // clock, statement_timestamp(), as the claim transaction does. The result only
 // hints at what a claim can do: the claim transaction is the authority (design §6.1).
 func SnapshotShops(ctx context.Context, db DB) ([]ShopSnapshot, error) {
-	rows, err := db.Query(ctx, snapshotShopsSQL)
-	if err != nil {
-		return nil, fmt.Errorf("store: snapshot shops: %w", err)
-	}
-	snaps, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (ShopSnapshot, error) {
-		var s ShopSnapshot
-		return s, row.Scan(&s.ID, &s.Weight, &s.MaxConcurrency, &s.RatePerSec, &s.RateBurst, &s.Running, &s.Runnable, &s.Throttled)
+	var snaps []ShopSnapshot
+	// One transaction, so that sorts can be turned off for the one statement.
+	err := pgx.BeginFunc(ctx, db, func(tx pgx.Tx) error {
+		if err := noPlannerSort(ctx, tx); err != nil {
+			return err
+		}
+		rows, err := tx.Query(ctx, snapshotShopsSQL)
+		if err != nil {
+			return err
+		}
+		snaps, err = pgx.CollectRows(rows, func(row pgx.CollectableRow) (ShopSnapshot, error) {
+			var s ShopSnapshot
+			return s, row.Scan(&s.ID, &s.Weight, &s.MaxConcurrency, &s.RatePerSec, &s.RateBurst, &s.Running, &s.Runnable, &s.Throttled)
+		})
+		return err
 	})
 	if err != nil {
 		return nil, fmt.Errorf("store: snapshot shops: %w", err)
