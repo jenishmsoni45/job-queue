@@ -66,6 +66,7 @@ Each entry gives the question, the options considered, the decision and its cons
 | D-058 | Plan-proof claim and snapshot queries | Phase 5: first bench run, NFR-9 failed | Decided |
 | D-059 | Planner sorts off for the claim and the snapshot | Phase 5: second bench run, NFR-9 failed at spike onset | Decided |
 | D-060 | The claim's UPDATE finds jobs by primary key | Phase 5: third bench run, NFR-9 failed at spike onset | Decided |
+| D-061 | Go 1.27.4 for GO-2026-6859 | Phase 5: `make audit` failed | Decided |
 
 ---
 
@@ -898,3 +899,17 @@ Each entry gives the question, the options considered, the decision and its cons
   - `internal/store` has a test that builds the stale-statistics state of D-059 and checks the UPDATE is planned on `jobs_pkey` with no sequential scan and no scan of the queue's indexes.
 - **Why not B:** see B above.
 - **Why not C:** it changes the plan of statements that are already fine, and still leaves the choice to the planner.
+
+## D-061 · Go 1.27.4 for GO-2026-6859
+
+- **Date:** 2026-11-14 · **Phase:** 5 · **Source:** Mid-phase surprise. `make audit` failed with GO-2026-6859, a `net/http` vulnerability in the Go 1.27.3 standard library, fixed in 1.27.4. `govulncheck` reaches it through `pgtest.New`, which calls `pgx.ParseConfig`.
+- **Options:**
+  - A. Move the Go pin from 1.27.3 to 1.27.4 in `go.mod`, `Dockerfile` and `tools/Dockerfile`, with the digest of the official `golang:1.27.4-trixie` multi-arch index.
+  - B. Leave the pin and report the failing audit in the PR.
+  - C. Make the bump a separate PR.
+- **Decision:** A (the user's choice).
+  - The new digest is `sha256:b54b2639de8c1bfe538ec5ffc45f29b1932235ac5f6d63c059853646677112d9`, read from the registry's index for `golang:1.27.4-trixie`. The image is the same official one, one patch release newer, and it runs only in Docker.
+  - After the change `make audit` reports no vulnerabilities in either `govulncheck` or `npm audit`.
+  - The bench runs and the chaos run in this phase's results were built with Go 1.27.3. A patch release changes no behaviour this project depends on, but the results were not repeated on 1.27.4.
+- **Why not B:** CLAUDE.md requires `make audit` to pass.
+- **Why not C:** the bump is two lines of pins and the PR needs a passing audit now.
