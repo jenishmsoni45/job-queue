@@ -65,6 +65,7 @@ Each entry gives the question, the options considered, the decision and its cons
 | D-057 | NFR-12's warm-up window ends one tick early | Phase 5: first bench run, NFR-12 measured the spike's first tick | Decided |
 | D-058 | Plan-proof claim and snapshot queries | Phase 5: first bench run, NFR-9 failed | Decided |
 | D-059 | Planner sorts off for the claim and the snapshot | Phase 5: second bench run, NFR-9 failed at spike onset | Decided |
+| D-060 | The claim's UPDATE finds jobs by primary key | Phase 5: third bench run, NFR-9 failed at spike onset | Decided |
 
 ---
 
@@ -880,3 +881,20 @@ Each entry gives the question, the options considered, the decision and its cons
   - On the bench stack with a 120 s warm-up and a 40 s spike, shops 2–10 stayed at 180–194 jobs/s through onset and the four onset buckets' worst p99 was 53–85 ms against a bound of 190 ms. The full `make bench` still has to confirm it.
 - **Why not B:** a design change that gives up the check for a queued job whose `run_at` has passed.
 - **Why not C:** see C above.
+
+## D-060 · The claim's UPDATE finds jobs by primary key
+
+- **Date:** 2026-11-14 · **Phase:** 5 · **Source:** Mid-phase surprise. After D-059, a full `make bench` passed NFR-11, NFR-12 and the FIFO validity checks, but NFR-9 still failed at spike onset. Shops 2–10 had p99 of 4.9–17.2 s from 120 s to 160 s, against a bound of about 187 ms, and completions fell from about 180 to about 66 jobs/s. Everything from 160 s on passed except two buckets at 220–230 s.
+- **Finding:** measured on the bench stack with the real config and an onset-only run.
+  - Sampling `pg_stat_activity` at t=139–147 s caught the claim's `UPDATE jobs j ... FROM unnest($1, $2) c, job_kinds k WHERE j.id = c.id ...` using 15–23 ms of CPU per call. Others' completions fell from 190 to 100 jobs/s, and recovered after autoanalyze at about t=145 s.
+  - With the jobs statistics stale after the flood, the planner chose a nested loop with a join filter `c.id = j.id` over every queued row. `EXPLAIN` showed 142,000 buffers with 70,000 queued jobs, against about 1,600 with fresh statistics.
+  - Finding jobs with `j.id = ANY($1)` was not enough. The `state = 'queued'` check lets the planner use the partial index `jobs_queued_fifo`, whose statistics say it is nearly empty, and filter by id. The plan test caught that.
+- **Options:**
+  - A. Find the jobs with `j.id = ANY($1)`, take each owner from the same position of `$2`, and write the state check as `(j.state || '') = 'queued'`, which no partial index can be proved to cover.
+  - B. Run ANALYZE on `jobs` more often. It lags the flood by the autovacuum interval, which is when the statistics are wrong.
+  - C. Turn off nested loops for the claim transaction. A blunter setting that affects the other statements in it.
+- **Decision:** A (the user approved the fix on 2026-11-14).
+  - The rows updated, the locks, the fencing and the `claim_seq` increment are unchanged. A job that is not queued is still not started, and the claim still fails if fewer rows are updated than candidates.
+  - `internal/store` has a test that builds the stale-statistics state of D-059 and checks the UPDATE is planned on `jobs_pkey` with no sequential scan and no scan of the queue's indexes.
+- **Why not B:** see B above.
+- **Why not C:** it changes the plan of statements that are already fine, and still leaves the choice to the planner.

@@ -245,18 +245,33 @@ func shopRoom(ctx context.Context, tx pgx.Tx, cands []candidate, limits map[stri
 	return room, nil
 }
 
-// claimRows turns the locked jobs ids into running jobs, the i-th for owners[i].
-func claimRows(ctx context.Context, tx pgx.Tx, ids []int64, owners []string) ([]Claimed, error) {
-	rows, err := tx.Query(ctx, `
+// claimRowsSQL starts the locked candidates. The jobs are found by primary key, with
+// j.id = ANY($1), and each takes its owner from the same position in $2. Two forms the
+// planner can be misled into are avoided, each costing tens of milliseconds of CPU per
+// claim just after a flood, when its statistics are stale (D-060):
+//   - Joining jobs to unnest($1) is planned as a nested loop with a join filter over
+//     every queued row (142,000 buffers with 70,000 queued, against 1,600).
+//   - Writing the check as j.state = 'queued' lets the planner use the partial index
+//     jobs_queued_fifo, which its statistics say is nearly empty, and filter by id. So the
+//     check is on j.state concatenated with an empty string, which no partial index can be
+//     proved to cover.
+//
+// The check is still made: only a queued job is started. The ids are distinct, so
+// array_position finds each one.
+const claimRowsSQL = `
 		UPDATE jobs j
-		   SET state = 'running', claim_seq = j.claim_seq + 1, lease_owner = c.owner,
+		   SET state = 'running', claim_seq = j.claim_seq + 1,
+		       lease_owner = ($2::text[])[array_position($1::bigint[], j.id)],
 		       lease_expires_at = statement_timestamp() + k.lease_ms * interval '1 millisecond',
 		       first_claimed_at = coalesce(j.first_claimed_at, statement_timestamp())
-		  FROM unnest($1::bigint[], $2::text[]) AS c (id, owner), job_kinds k
-		 WHERE j.id = c.id AND k.kind = j.kind AND j.state = 'queued'
+		  FROM job_kinds k
+		 WHERE j.id = ANY($1::bigint[]) AND k.kind = j.kind AND (j.state || '') = 'queued'
 		RETURNING j.id, j.shop_id, j.kind, j.payload, j.claim_seq, j.attempts, j.lease_owner,
-		          k.lease_ms, k.heartbeat_ms, k.timeout_ms, statement_timestamp(), j.lease_expires_at`,
-		ids, owners)
+		          k.lease_ms, k.heartbeat_ms, k.timeout_ms, statement_timestamp(), j.lease_expires_at`
+
+// claimRows turns the locked jobs ids into running jobs, the i-th for owners[i].
+func claimRows(ctx context.Context, tx pgx.Tx, ids []int64, owners []string) ([]Claimed, error) {
+	rows, err := tx.Query(ctx, claimRowsSQL, ids, owners)
 	if err != nil {
 		return nil, fmt.Errorf("store: claim: %w", err)
 	}

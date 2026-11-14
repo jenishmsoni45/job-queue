@@ -278,6 +278,20 @@ func TestClaimAndSnapshotQueriesUseTheShopIndexWithStaleStatistics(t *testing.T)
 	if !slices.Contains(cand, "jobs_queued_shop") || slices.Contains(cand, "jobs_queued_fifo") || slices.Contains(cand, "Sort") {
 		t.Errorf("the single-shop claim statement is planned on %v, want jobs_queued_shop alone", cand)
 	}
+	// The UPDATE that starts the locked candidates is found by primary key. Joined to
+	// unnest it was a nested loop over every queued row (D-060).
+	var ids []int64
+	rows, err := env.Pool.Query(ctx, `SELECT id FROM jobs WHERE state = 'queued' AND shop_id = $1 ORDER BY run_at LIMIT 3`, shopA)
+	if err == nil {
+		ids, err = pgx.CollectRows(rows, pgx.RowTo[int64])
+	}
+	if err != nil || len(ids) != 3 {
+		t.Fatalf("picking ids: %v, %v", ids, err)
+	}
+	upd := scans(t, env, store.ClaimRowsSQL, ids, []string{"w1", "w2", "w3"})
+	if !slices.Contains(upd, "jobs_pkey") || slices.Contains(upd, "Seq Scan on jobs") || slices.Contains(upd, "jobs_queued_fifo") {
+		t.Errorf("the claim's UPDATE is planned on %v, want jobs_pkey and no scan of the queue", upd)
+	}
 	snap := scans(t, env, store.SnapshotShopsSQL)
 	if !slices.Contains(snap, "jobs_queued_shop") || slices.Contains(snap, "jobs_queued_fifo") || slices.Contains(snap, "Sort") {
 		t.Errorf("the snapshot statement is planned on %v, want jobs_queued_shop alone", snap)
