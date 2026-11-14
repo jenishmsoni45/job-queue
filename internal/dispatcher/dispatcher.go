@@ -186,9 +186,13 @@ func (d *Dispatcher) campaign(ctx context.Context, conn *pgx.Conn) bool {
 			return false
 		}
 	}
-	if _, err := conn.Exec(ctx, "LISTEN "+pgx.Identifier{store.EnqueueNotifyChannel}.Sanitize()); err != nil {
-		d.cfg.Log.Warn("listen failed", "err", err.Error())
-		return false
+	// A notify on either channel refreshes the book early (design §6.1): a new
+	// job may make a shop runnable, and a throttle pauses one.
+	for _, ch := range []string{store.EnqueueNotifyChannel, store.ThrottleNotifyChannel} {
+		if _, err := conn.Exec(ctx, "LISTEN "+pgx.Identifier{ch}.Sanitize()); err != nil {
+			d.cfg.Log.Warn("listen failed", "channel", ch, "err", err.Error())
+			return false
+		}
 	}
 
 	leaderCtx, cancel := context.WithCancel(ctx)
@@ -210,8 +214,8 @@ func (d *Dispatcher) campaign(ctx context.Context, conn *pgx.Conn) bool {
 	return true
 }
 
-// watch waits for enqueue notifications on conn and checks that conn is alive,
-// until it fails or ctx ends.
+// watch waits for enqueue and throttle notifications on conn and checks that
+// conn is alive, until it fails or ctx ends.
 func (d *Dispatcher) watch(ctx context.Context, conn *pgx.Conn) {
 	const check = time.Second
 	for {

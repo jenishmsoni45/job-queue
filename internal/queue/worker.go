@@ -35,7 +35,11 @@ const (
 	OutcomeCompleted Outcome = "completed"
 	// OutcomeRetry: a temporary failure was written; the job is queued again.
 	OutcomeRetry Outcome = "retry"
-	// OutcomeDead: a permanent failure, or the last allowed attempt failed.
+	// OutcomeThrottled: a Throttled result was written; the job is queued again
+	// after the wait, its attempts unchanged, and its shop is paused (D-004).
+	OutcomeThrottled Outcome = "throttled"
+	// OutcomeDead: a permanent failure, the last allowed attempt failed, or the
+	// throttle budget ran out.
 	OutcomeDead Outcome = "dead"
 	// OutcomeLeaseLost: the lease was gone, so no result was written (Q2).
 	OutcomeLeaseLost Outcome = "lease_lost"
@@ -59,7 +63,7 @@ type Report struct {
 	// AmbiguousCommit is set when the completion's commit failed with an
 	// unknown outcome and the worker read the job back (design §7).
 	AmbiguousCommit bool
-	// Backoff is the delay drawn for a retry.
+	// Backoff is the delay drawn for a retry, or a throttle's wait plus its jitter.
 	Backoff time.Duration
 	// Started and Finished come from the worker's clock. They are for reports
 	// only and never reach a lease decision (NFR-14).
@@ -324,6 +328,10 @@ func (w *Worker) run(c store.Claimed) {
 		rep.Outcome, rep.Err = OutcomeLeaseLost, errors.Join(herr, cause)
 	case herr == nil && !rep.HardTimeout:
 		w.complete(&rep, f, r)
+	case isThrottle(herr) && !rep.HardTimeout:
+		wait, _ := IsThrottled(herr)
+		w.rollback(r)
+		w.writeThrottle(&rep, f, wait, herr)
 	case IsPermanent(herr):
 		w.rollback(r)
 		w.writePermanent(&rep, f, herr)
@@ -446,6 +454,33 @@ func (w *Worker) writeFailure(rep *Report, f store.Fence, cause error) {
 		rep.Outcome, rep.Err = OutcomeDead, cause
 	default:
 		rep.Outcome, rep.Err, rep.Backoff = OutcomeRetry, cause, delay
+	}
+}
+
+func isThrottle(err error) bool {
+	_, ok := IsThrottled(err)
+	return ok
+}
+
+// writeThrottle records a Throttled result (design §8): the job runs again
+// after the wait plus jitter without using an attempt, and its shop is paused
+// for the wait; past the throttle budget it goes dead. Like a failure, a write
+// error leaves the outcome unknown, so the job is abandoned: either the write
+// landed, or the lease expires and the reaper requeues it (design §7).
+func (w *Worker) writeThrottle(rep *Report, f store.Fence, wait time.Duration, cause error) {
+	ctx, cancel := context.WithTimeout(w.hard, resultTimeout)
+	defer cancel()
+	jitter := ThrottleJitter(wait)
+	res, err := store.Throttle(ctx, w.cfg.DB, f, wait, jitter, failMessage(cause))
+	switch {
+	case err != nil:
+		rep.Outcome, rep.Err = OutcomeAbandoned, errors.Join(cause, err)
+	case !res.Applied:
+		rep.Outcome, rep.Err = OutcomeLeaseLost, errors.Join(cause, errFencedOut)
+	case res.State == store.StateDead:
+		rep.Outcome, rep.Err = OutcomeDead, cause
+	default:
+		rep.Outcome, rep.Err, rep.Backoff = OutcomeThrottled, cause, wait+jitter
 	}
 }
 

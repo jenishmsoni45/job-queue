@@ -1,0 +1,37 @@
+{
+  "dedupe_window_ms": 604800000,
+  "shops": [
+    {"id": "shop-01.mockshop.test", "weight": 1, "max_concurrency": 100, "rate_per_sec": 100000, "rate_burst": 100000, "backlog_limit": 50000, "backlog_retry_after_ms": 5000, "mock_api_capacity": 1000000, "mock_api_leak_per_sec": 1000000, "webhooks_per_sec": 0},
+    {"id": "shop-02.mockshop.test", "weight": 1, "max_concurrency": 100, "rate_per_sec": 100000, "rate_burst": 100000, "backlog_limit": 50000, "backlog_retry_after_ms": 5000, "mock_api_capacity": 1000000, "mock_api_leak_per_sec": 1000000, "webhooks_per_sec": 0},
+    {"id": "shop-03.mockshop.test", "weight": 1, "max_concurrency": 100, "rate_per_sec": 100000, "rate_burst": 100000, "backlog_limit": 50000, "backlog_retry_after_ms": 5000, "mock_api_capacity": 1000000, "mock_api_leak_per_sec": 1000000, "webhooks_per_sec": 0},
+    {"id": "shop-04.mockshop.test", "weight": 1, "max_concurrency": 100, "rate_per_sec": 100000, "rate_burst": 100000, "backlog_limit": 50000, "backlog_retry_after_ms": 5000, "mock_api_capacity": 1000000, "mock_api_leak_per_sec": 1000000, "webhooks_per_sec": 0},
+    {"id": "shop-05.mockshop.test", "weight": 1, "max_concurrency": 100, "rate_per_sec": 100000, "rate_burst": 100000, "backlog_limit": 50000, "backlog_retry_after_ms": 5000, "mock_api_capacity": 1000000, "mock_api_leak_per_sec": 1000000, "webhooks_per_sec": 0},
+    {"id": "shop-06.mockshop.test", "weight": 1, "max_concurrency": 100, "rate_per_sec": 100000, "rate_burst": 100000, "backlog_limit": 50000, "backlog_retry_after_ms": 5000, "mock_api_capacity": 1000000, "mock_api_leak_per_sec": 1000000, "webhooks_per_sec": 0},
+    {"id": "shop-07.mockshop.test", "weight": 1, "max_concurrency": 100, "rate_per_sec": 100000, "rate_burst": 100000, "backlog_limit": 50000, "backlog_retry_after_ms": 5000, "mock_api_capacity": 1000000, "mock_api_leak_per_sec": 1000000, "webhooks_per_sec": 0},
+    {"id": "shop-08.mockshop.test", "weight": 1, "max_concurrency": 100, "rate_per_sec": 100000, "rate_burst": 100000, "backlog_limit": 50000, "backlog_retry_after_ms": 5000, "mock_api_capacity": 1000000, "mock_api_leak_per_sec": 1000000, "webhooks_per_sec": 0},
+    {"id": "shop-09.mockshop.test", "weight": 1, "max_concurrency": 100, "rate_per_sec": 100000, "rate_burst": 100000, "backlog_limit": 50000, "backlog_retry_after_ms": 5000, "mock_api_capacity": 1000000, "mock_api_leak_per_sec": 1000000, "webhooks_per_sec": 0},
+    {"id": "shop-10.mockshop.test", "weight": 1, "max_concurrency": 100, "rate_per_sec": 100000, "rate_burst": 100000, "backlog_limit": 50000, "backlog_retry_after_ms": 5000, "mock_api_capacity": 1000000, "mock_api_leak_per_sec": 1000000, "webhooks_per_sec": 0}
+  ],
+  "kinds": [
+    {"kind": "order.tag", "cost": 1, "lease_ms": 30000, "heartbeat_ms": 10000, "timeout_ms": 300000, "max_attempts": 10, "max_throttles": 50, "handler_sleep_ms": 30}
+  ],
+  "mockshop": {
+    "retry_horizon_ms": 3600000,
+    "retry_base_ms": 1000,
+    "retry_cap_ms": 60000,
+    "delivery_timeout_ms": 5000,
+    "duplicate_probability": 0,
+    "duplicate_delay_max_ms": 0,
+    "concurrent_duplicate_probability": 0
+  },
+  "loadgen": {
+    "seed": 20261221,
+    "tick_ms": 100,
+    "rate_per_shop": 20,
+    "warmup_ms": 120000,
+    "spike_shop": "shop-01.mockshop.test",
+    "spike_rate": 2000,
+    "spike_ms": 300000,
+    "drain_max_ms": 1800000
+  }
+}

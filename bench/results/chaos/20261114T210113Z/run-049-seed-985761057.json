@@ -1,0 +1,93 @@
+{
+  "seed": 985761057,
+  "started": "2026-11-14T21:23:40.5395163Z",
+  "duration_ms": 22955,
+  "passed": true,
+  "jobs": {
+    "planned": 2000,
+    "accepted": 2000,
+    "enqueue_retries": 0,
+    "duplicates": 0,
+    "completed": 2000,
+    "dead": 0,
+    "not_terminal": 0
+  },
+  "faults": [
+    {
+      "kind": "reset_peer",
+      "target": "pg-worker-2",
+      "at_ms": 261,
+      "duration_ms": 633,
+      "stream": "upstream",
+      "attributes": {
+        "timeout": 193
+      },
+      "applied_ms": 261,
+      "reverted_ms": 1085
+    },
+    {
+      "kind": "latency",
+      "target": "pg-worker-2",
+      "at_ms": 10895,
+      "duration_ms": 4849,
+      "stream": "downstream",
+      "attributes": {
+        "jitter": 83,
+        "latency": 458
+      },
+      "applied_ms": 10896,
+      "reverted_ms": 15750
+    },
+    {
+      "kind": "kill_worker",
+      "target": "worker-2",
+      "at_ms": 19548,
+      "duration_ms": 2952,
+      "applied_ms": 19549,
+      "reverted_ms": 22673
+    }
+  ],
+  "samples": {
+    "taken": 22,
+    "skipped": 0,
+    "backlog_mismatched": 0,
+    "connections_seen": 336
+  },
+  "checks": [
+    {
+      "name": "q1_every_accepted_job_completed_or_dead",
+      "passed": true,
+      "detail": "2000 accepted: 2000 completed, 0 dead"
+    },
+    {
+      "name": "q4_one_job_per_dedupe_key",
+      "passed": true,
+      "detail": "2000 keys, 2000 jobs"
+    },
+    {
+      "name": "q3_no_overlapping_leases",
+      "passed": true,
+      "detail": "2034 leases checked"
+    },
+    {
+      "name": "backlog_counter_matches_real_count",
+      "passed": true,
+      "detail": "22 samples during the run and one at the end matched"
+    },
+    {
+      "name": "run_tx_effect_applied_once",
+      "passed": true,
+      "detail": "2000 effects"
+    },
+    {
+      "name": "workers_and_dispatcher_reach_postgres_through_toxiproxy",
+      "passed": true,
+      "detail": "347 connections seen across the run's samples, all through toxiproxy"
+    },
+    {
+      "name": "nfr11_one_mockshop_mutation_per_completed_job",
+      "passed": true,
+      "detail": "2000 completed jobs, 2000 mutations applied for the run's jobs"
+    }
+  ]
+}

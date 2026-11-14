@@ -14,15 +14,17 @@ import (
 	"fmt"
 	"slices"
 	"sync"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
 	"github.com/jenishmsoni45/job-queue/internal/idem"
 )
 
-// Handler runs one job. It returns nil on success, Permanent(err) to send the
-// job straight to dead, or any other error for a temporary failure that is
-// retried with backoff (design §8). It must stop promptly when ctx is cancelled:
+// Handler runs one job. It returns nil on success, Throttled(d) when a
+// rate-limited API asked it to wait d, Permanent(err) to send the job straight
+// to dead, or any other error for a temporary failure that is retried with
+// backoff (design §8). It must stop promptly when ctx is cancelled:
 // that means the lease was lost, the hard timeout passed, or the worker is
 // stopping.
 type Handler func(ctx context.Context, run *Run) error
@@ -178,6 +180,34 @@ func Permanent(err error) error {
 func IsPermanent(err error) bool {
 	var p *permanentError
 	return errors.As(err, &p)
+}
+
+// ThrottledError is a handler's report that a rate-limited API refused the
+// call and asked it to wait RetryAfter (D-004).
+type ThrottledError struct {
+	RetryAfter time.Duration
+}
+
+func (e *ThrottledError) Error() string {
+	return fmt.Sprintf("throttled: retry after %s", e.RetryAfter)
+}
+
+// Throttled reschedules the job to run again no earlier than d from now, by
+// the database clock, without using up an attempt (Q7, AC-6.1), and pauses the
+// job's shop for d: no claim for it commits until then (AC-6.2). A job throttled
+// more often than its kind's throttle budget goes dead with "throttle budget
+// exhausted" (AC-6.3). A negative d counts as 0.
+func Throttled(d time.Duration) error {
+	return &ThrottledError{RetryAfter: max(0, d)}
+}
+
+// IsThrottled reports whether err was made by Throttled, and the wait it asked for.
+func IsThrottled(err error) (time.Duration, bool) {
+	var t *ThrottledError
+	if errors.As(err, &t) {
+		return max(0, t.RetryAfter), true
+	}
+	return 0, false
 }
 
 // Registry maps job kinds to handlers.

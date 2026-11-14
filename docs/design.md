@@ -40,8 +40,11 @@ Every setting lives in config, either the JSON file (§11.4) or the environment.
 | Claim long-poll timeout | 25 s | this doc |
 | DRR base quantum | the largest job cost in config | D-013 |
 | Completed-job retention / discarded-job retention | 24 h / 24 h after discard | D-015 |
-| Dedupe window | 7 days | D-018 |
+| Dedupe window | 7 days (`dedupe_window_ms` in the config file) | D-018, D-050 |
 | `mockshop` webhook retry horizon | 1 h (must be shorter than the dedupe window) | D-018 |
+| `mockshop` Admin API bucket, per shop | capacity 40, leaking 2 per second (`config/shops.json`) | D-010, D-050 |
+| `mockshop` webhook rate, per shop | 1 per second in `config/shops.json`; 0 in bench, chaos and test configs | D-054 |
+| `loadgen` tick | 100 ms (`bench/blackfriday.json`) | this doc |
 | Console poll / stats window / sparkline | 2 s / 1 min / 10 min in 10 s buckets | D-012 |
 | Chaos lease / heartbeat | 2 s / 0.5 s | D-023 |
 | Partitions (3+) | 16 | D-016 |
@@ -423,24 +426,32 @@ Handlers are registered by kind. Test-only kinds (used by chaos runs and invaria
 
 ```json
 {
+  "dedupe_window_ms": 604800000,
   "shops": [
     {"id": "shop-01.mockshop.test", "weight": 1, "max_concurrency": 4, "rate_per_sec": 50,
-     "rate_burst": 50, "backlog_limit": 10000, "backlog_retry_after_ms": 5000}
+     "rate_burst": 50, "backlog_limit": 10000, "backlog_retry_after_ms": 5000,
+     "mock_api_capacity": 40, "mock_api_leak_per_sec": 2, "webhooks_per_sec": 1}
   ],
   "kinds": [
     {"kind": "order.tag", "cost": 1, "lease_ms": 30000, "heartbeat_ms": 10000, "timeout_ms": 300000,
      "max_attempts": 10, "max_throttles": 50, "handler_sleep_ms": 30}
-  ]
+  ],
+  "mockshop": {
+    "retry_horizon_ms": 3600000, "retry_base_ms": 1000, "retry_cap_ms": 60000, "delivery_timeout_ms": 5000,
+    "duplicate_probability": 0.05, "duplicate_delay_max_ms": 10000, "concurrent_duplicate_probability": 0.02
+  }
 }
 ```
 
+- The `mock_api_*` fields are the shop's Admin API leaky bucket in `mockshop` (§12), and `webhooks_per_sec` is how many `orders/create` webhooks `mockshop` sends for it. The `mockshop` section holds the webhook sender's settings. One file carries all of them, so every process can check them against each other (D-050).
+- An optional `loadgen` section holds the bench load: seed, tick, the steady rate per shop, the warm-up, and the spike's shop, rate and length (§17). `loadgen` refuses a file without one.
 - Each process validates the file at startup and fails fast on an error. Examples of errors: a weight of 0, a heartbeat that isn't shorter than the lease, and a `mockshop` retry horizon that isn't shorter than the dedupe window.
 - `api` upserts `shops`, `shop_state` and `job_kinds` from it.
 - Bench, chaos and test runs use their own files under `bench/` and `tests/`.
 
 ## 12. mockshop
 
-`mockshop` simulates Shopify; it never calls the real thing. All of its state lives in memory, and it is never a chaos target.
+`mockshop` simulates Shopify; it never calls the real thing. All of its state lives in memory, and it is never a chaos target. It reads the same config file as `queued` (§11.4, D-050): each shop's bucket and webhook rate, and the sender's settings.
 
 - **Admin API:** `POST /admin/api/mock/shops/{shop}/orders/{order_id}/tags` with body `{tag}`.
   - **Rate limit:** each shop has a leaky bucket (D-010), with capacity and leak rate from config. A request is allowed if `level + 1 ≤ capacity`; then `level += 1`. The level drains continuously at the leak rate.
@@ -520,12 +531,15 @@ Handlers are registered by kind. Test-only kinds (used by chaos runs and invaria
   - `loadgen` is open-loop: Poisson arrivals per shop from a seeded random generator.
   - It sends each tick's arrivals for a shop as one batch, and counts 429s as shed without retrying them.
   - The arrival schedule is identical in both runs.
-- **Procedure:** for each scheduler, `make bench` does the following:
-  1. It starts from a fresh database.
+  - After the spike it keeps the steady rate until every job accepted before the spike ended is terminal, then stops sending, and `make bench` waits for the jobs still running (D-056).
+- **Procedure:** `make bench` runs on its own Compose project, `jobqueue-bench`, which reads `bench/blackfriday.json`, publishes no ports, and is removed when `make bench` ends (D-053). For each scheduler, it does the following:
+  1. It starts from a fresh database: the bench stack is brought up with its volume removed.
   2. It runs the timeline and waits until every accepted job is terminal.
   3. It exports per-job timestamps from Postgres and the `mockshop` mutation counts.
+- **Buckets (D-051):** a job's 10 s bucket is decided by its arrival, `first_runnable_at`, and buckets are aligned to the run's first arrival. NFR-9's warm-up p99 covers the jobs that arrived during the warm-up, and its spike buckets the jobs that arrived during the spike.
 - **Outputs:** everything lands in `bench/results/<timestamp>/`:
-  - per-run raw data
+  - per-run raw data, gzipped and git-ignored; every other output is committed (D-052)
+  - per-run summaries, holding the per-shop, per-bucket series the chart is drawn from, so the chart and report can be rebuilt from committed files
   - `summary.json`
   - `blackfriday.svg`, drawn by a Go program using only the standard library: each shop's p99 queue wait in 10 s buckets over time, FIFO and DRR side by side
   - `report.md`, with PASS/FAIL for NFR-9, NFR-11 and NFR-12, plus throughput, p50/p99, end-to-end time and shed counts

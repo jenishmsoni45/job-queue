@@ -13,6 +13,8 @@
 // with the shop and kind settings in the config file (design §11.4):
 //
 //	QUEUED_HTTP_ADDR          listen address (":8080")
+//	SHOPIFY_WEBHOOK_SECRET    api: the dummy HMAC secret webhooks are checked with (required)
+//	QUEUED_MOCKSHOP_URL       worker: mockshop's Admin API (http://mockshop:8090)
 //	QUEUED_CONFIG             config file (/etc/queued/shops.json); every role validates it
 //	QUEUED_DISPATCHER_URL     worker: the dispatcher's base URL (http://dispatcher:8080)
 //	QUEUED_WORKER_SLOTS       worker: handler goroutines (8)
@@ -24,7 +26,6 @@
 //	QUEUED_PRUNE_INTERVAL_MS  dispatcher: pruner interval (60000)
 //	QUEUED_COMPLETED_RETENTION_MS  dispatcher: keep completed jobs this long (86400000, 24 h)
 //	QUEUED_DISCARDED_RETENTION_MS  dispatcher: keep discarded jobs this long after discard (86400000, 24 h)
-//	QUEUED_DEDUPE_WINDOW_MS   dispatcher: keep dedupe keys this long (604800000, 7 days)
 //	QUEUED_BACKOFF_BASE_MS    worker: retry backoff base (2000)
 //	QUEUED_BACKOFF_CAP_MS     worker: retry backoff cap (300000)
 //	QUEUED_DRAIN_MS           worker: on SIGTERM, how long in-flight runs may finish (8000)
@@ -48,9 +49,11 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/jenishmsoni45/job-queue/internal/adminapi"
 	"github.com/jenishmsoni45/job-queue/internal/api"
 	"github.com/jenishmsoni45/job-queue/internal/config"
 	"github.com/jenishmsoni45/job-queue/internal/dispatcher"
+	"github.com/jenishmsoni45/job-queue/internal/handlers"
 	"github.com/jenishmsoni45/job-queue/internal/httpserver"
 	"github.com/jenishmsoni45/job-queue/internal/migrate"
 	"github.com/jenishmsoni45/job-queue/internal/queue"
@@ -129,6 +132,7 @@ func run(ctx context.Context, args []string, getenv func(string) string, stderr 
 type settings struct {
 	configPath    string
 	dispatcherURL string
+	mockshopURL   string
 	slots         int
 	testHandlers  bool
 	scheduler     scheduler.Mode
@@ -145,6 +149,7 @@ func loadSettings(getenv func(string) string) (settings, error) {
 	s := settings{
 		configPath:    getenv("QUEUED_CONFIG"),
 		dispatcherURL: getenv("QUEUED_DISPATCHER_URL"),
+		mockshopURL:   getenv("QUEUED_MOCKSHOP_URL"),
 		testHandlers:  getenv("QUEUED_TEST_HANDLERS") == "1",
 	}
 	if s.configPath == "" {
@@ -152,6 +157,9 @@ func loadSettings(getenv func(string) string) (settings, error) {
 	}
 	if s.dispatcherURL == "" {
 		s.dispatcherURL = "http://dispatcher:8080"
+	}
+	if s.mockshopURL == "" {
+		s.mockshopURL = "http://mockshop:8090"
 	}
 	var errs []error
 	mode := scheduler.ModeDRR
@@ -182,10 +190,10 @@ func loadSettings(getenv func(string) string) (settings, error) {
 	s.longPoll = ms("QUEUED_CLAIM_TIMEOUT_MS", 25_000)
 	s.reaperScan = ms("QUEUED_REAPER_SCAN_MS", 5_000)
 	s.pruneInterval = ms("QUEUED_PRUNE_INTERVAL_MS", 60_000)
+	// The dedupe window comes from the config file (D-050); see retention.
 	s.retention = store.Retention{
-		Completed:  ms("QUEUED_COMPLETED_RETENTION_MS", 24*60*60*1000),
-		Discarded:  ms("QUEUED_DISCARDED_RETENTION_MS", 24*60*60*1000),
-		DedupeKeys: ms("QUEUED_DEDUPE_WINDOW_MS", 7*24*60*60*1000),
+		Completed: ms("QUEUED_COMPLETED_RETENTION_MS", 24*60*60*1000),
+		Discarded: ms("QUEUED_DISCARDED_RETENTION_MS", 24*60*60*1000),
 	}
 	s.backoff = queue.Backoff{Base: ms("QUEUED_BACKOFF_BASE_MS", 2_000), Cap: ms("QUEUED_BACKOFF_CAP_MS", 300_000)}
 	s.drain = ms("QUEUED_DRAIN_MS", 8_000)
@@ -212,7 +220,11 @@ func runRole(ctx context.Context, role, addr string, getenv func(string) string,
 	}
 	switch role {
 	case "api":
-		return runAPI(ctx, addr, cfg, connCfg, log)
+		secret := getenv("SHOPIFY_WEBHOOK_SECRET")
+		if secret == "" {
+			return errors.New("SHOPIFY_WEBHOOK_SECRET is required: the webhook receiver checks every webhook's HMAC with it")
+		}
+		return runAPI(ctx, addr, cfg, connCfg, []byte(secret), log)
 	case "dispatcher":
 		return runDispatcher(ctx, addr, s, cfg, connCfg, log)
 	default:
@@ -252,7 +264,7 @@ func openPool(ctx context.Context, connCfg *pgx.ConnConfig, app string, maxConns
 
 // runAPI seeds shops and kinds from the config file (D-019), then serves the
 // job endpoints.
-func runAPI(ctx context.Context, addr string, cfg *config.File, connCfg *pgx.ConnConfig, log *slog.Logger) error {
+func runAPI(ctx context.Context, addr string, cfg *config.File, connCfg *pgx.ConnConfig, secret []byte, log *slog.Logger) error {
 	pool, err := openPool(ctx, connCfg, "queued-api", 0)
 	if err != nil {
 		return err
@@ -267,7 +279,7 @@ func runAPI(ctx context.Context, addr string, cfg *config.File, connCfg *pgx.Con
 	log.Info("seeded config", "shops", len(cfg.Shops), "kinds", len(cfg.Kinds))
 
 	mux := httpserver.NewMux("queued api")
-	api.New(pool, log).Register(mux)
+	api.New(pool, log).WithWebhookSecret(secret).Register(mux)
 	return httpserver.ListenAndServe(ctx, addr, mux, log)
 }
 
@@ -292,7 +304,7 @@ func runDispatcher(ctx context.Context, addr string, s settings, cfg *config.Fil
 		StandbyRetry:   time.Second,
 		PruneInterval:  s.pruneInterval,
 		PruneBatch:     5_000, // design §9
-		Retention:      s.retention,
+		Retention:      retention(s, cfg),
 		Log:            log,
 	})
 	if err != nil {
@@ -314,6 +326,24 @@ func runDispatcher(ctx context.Context, addr string, s settings, cfg *config.Fil
 	return err
 }
 
+// adminClient is the handlers' client for mockshop's Admin API. It keeps an
+// idle connection per handler slot, so a busy worker reuses connections instead
+// of opening one per call. Each call is bounded by its handler's context too.
+func adminClient(baseURL string, slots int) *adminapi.Client {
+	tr := http.DefaultTransport.(*http.Transport).Clone()
+	tr.MaxIdleConnsPerHost = slots
+	return &adminapi.Client{BaseURL: baseURL, HTTP: &http.Client{Transport: tr, Timeout: 30 * time.Second}}
+}
+
+// retention is how long the pruner keeps finished rows: the environment's job
+// retention windows, and the config file's dedupe window (D-018, D-050), the
+// same window mockshop's retry horizon is checked against.
+func retention(s settings, cfg *config.File) store.Retention {
+	r := s.retention
+	r.DedupeKeys = cfg.DedupeWindow()
+	return r
+}
+
 // runWorker runs the handler pool. On SIGTERM it stops claiming and lets
 // in-flight runs finish for up to the drain time, then stops them; their leases
 // expire and the reaper requeues the jobs.
@@ -325,8 +355,10 @@ func runWorker(ctx context.Context, addr string, s settings, cfg *config.File, c
 	defer pool.Close()
 
 	reg := queue.NewRegistry()
+	admin := adminClient(s.mockshopURL, s.slots)
+	handlers.Register(reg, cfg, admin)
 	if s.testHandlers {
-		testkinds.Register(reg)
+		testkinds.Register(reg, testkinds.WithAdminAPI(admin))
 	}
 	host, err := os.Hostname()
 	if err != nil {

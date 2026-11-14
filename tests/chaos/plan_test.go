@@ -105,8 +105,13 @@ func TestPlanWorkload(t *testing.T) {
 		t.Fatalf("%d jobs, want %d", len(p.Jobs), JobsPerRun)
 	}
 	keys := map[string]bool{}
+	orders := map[int64]bool{}
 	perShop := map[string]int{}
 	for _, j := range p.Jobs {
+		if j.OrderID <= 0 || orders[j.OrderID] {
+			t.Errorf("job %s has order %d, repeated or not positive", j.Key, j.OrderID)
+		}
+		orders[j.OrderID] = true
 		if keys[j.Key] || !strings.HasPrefix(j.Key, "chaos-42-") {
 			t.Errorf("key %q is repeated or not tied to the seed", j.Key)
 		}
@@ -123,5 +128,28 @@ func TestPlanWorkload(t *testing.T) {
 	}
 	if NewPlan(43, testShops).Jobs[0].Key == p.Jobs[0].Key {
 		t.Error("two seeds share dedupe keys, so a replay in the same database would dedupe against the other")
+	}
+}
+
+// NFR-11's chaos check: every completed job's key applied once, none more than
+// once, and a dead job may have none or one.
+func TestMutationErrors(t *testing.T) {
+	jobs := []RunJob{{1, "a", "completed"}, {2, "a", "dead"}, {3, "b", "completed"}, {4, "b", "dead"}}
+	good := map[string]map[string]int{"a": {"job-1-tag": 1, "job-99-tag": 3}, "b": {"job-3-tag": 1, "job-4-tag": 1}}
+	if _, err := MutationErrors(jobs, good); err != nil {
+		t.Errorf("good logs: %v (another run's job-99 must not count)", err)
+	}
+	for name, logs := range map[string]map[string]map[string]int{
+		"completed without one": {"a": {}, "b": {"job-3-tag": 1}},
+		"completed twice":       {"a": {"job-1-tag": 2}, "b": {"job-3-tag": 1}},
+		"dead twice":            {"a": {"job-1-tag": 1, "job-2-tag": 2}, "b": {"job-3-tag": 1}},
+		"under another shop":    {"a": {"job-1-tag": 1, "job-3-tag": 1}, "b": {}},
+	} {
+		if _, err := MutationErrors(jobs, logs); err == nil {
+			t.Errorf("%s: no error", name)
+		}
+	}
+	if _, err := MutationErrors([]RunJob{{1, "a", "dead"}}, good); err == nil {
+		t.Error("a run with no completed job passed")
 	}
 }

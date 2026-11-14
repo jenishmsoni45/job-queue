@@ -1,0 +1,12 @@
+{
+  "host_model": "Mac16,13",
+  "host_cpu": "Apple M4",
+  "host_memory_bytes": 17179869184,
+  "host_os": "Darwin 27.0.0",
+  "docker_cpus": 5,
+  "docker_memory_bytes": 8320163840,
+  "docker_server_version": "29.9.2",
+  "git_commit": "06216c3e2e330654a96bc2e1bb453f2ed0460ae4",
+  "git_dirty": true,
+  "make_up_stack_running": false
+}

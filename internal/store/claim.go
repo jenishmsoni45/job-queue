@@ -78,6 +78,9 @@ func ClaimFor(ctx context.Context, db DB, owners []string, spec ClaimSpec) (Clai
 	var out ClaimOutcome
 	err := pgx.BeginFunc(ctx, db, func(tx pgx.Tx) error {
 		out = ClaimOutcome{}
+		if err := noPlannerSort(ctx, tx); err != nil {
+			return err
+		}
 		cands, err := claimCandidates(ctx, tx, len(owners), spec.Shops)
 		if err != nil {
 			return err
@@ -144,19 +147,15 @@ type candidate struct {
 // claimCandidates locks up to n queued, runnable jobs, oldest first, skipping
 // rows another transaction holds. With shops, only their jobs are taken.
 func claimCandidates(ctx context.Context, tx pgx.Tx, n int, shops []string) ([]candidate, error) {
-	const head = `SELECT id, shop_id, cost FROM jobs WHERE state = 'queued' AND run_at <= statement_timestamp()`
-	const tail = ` ORDER BY run_at, id LIMIT $1 FOR NO KEY UPDATE SKIP LOCKED`
-	var (
-		rows pgx.Rows
-		err  error
-	)
-	// Two statements rather than one with an optional filter, so the planner can
-	// use jobs_queued_shop for a claim that names its shops.
-	if len(shops) == 0 {
-		rows, err = tx.Query(ctx, head+tail, n)
-	} else {
-		rows, err = tx.Query(ctx, head+` AND shop_id = ANY($2)`+tail, n, shops)
+	args := []any{n}
+	switch len(shops) {
+	case 0:
+	case 1:
+		args = append(args, shops[0])
+	default:
+		args = append(args, shops)
 	}
+	rows, err := tx.Query(ctx, candidatesSQL(len(shops)), args...)
 	if err != nil {
 		return nil, fmt.Errorf("store: claim candidates: %w", err)
 	}
@@ -168,6 +167,46 @@ func claimCandidates(ctx context.Context, tx pgx.Tx, n int, shops []string) ([]c
 		return nil, fmt.Errorf("store: claim candidates: %w", err)
 	}
 	return cands, nil
+}
+
+// noPlannerSort stops the planner from choosing an explicit Sort for the rest of the
+// transaction. The statements below are written so that jobs_queued_shop supplies their
+// order and a Sort is never needed; without this the planner can still pick
+// jobs_queued_fifo plus a top-N Sort, and it does exactly when its statistics are stale.
+// They go stale at the moment a flood arrives, which is when a claim costs the most: it
+// then reads the whole queued index for every shop (9,157 buffers and 4 ms against 41
+// buffers and 0.05 ms at a 45,000 job backlog), and the dispatcher, which asks on every
+// wake, saturates a core (D-059). A disabled node is not forbidden, only costed at
+// 10^10, so a statement with no other plan still runs.
+func noPlannerSort(ctx context.Context, tx pgx.Tx) error {
+	if _, err := tx.Exec(ctx, `SET LOCAL enable_sort = off`); err != nil {
+		return fmt.Errorf("store: disable planner sorts: %w", err)
+	}
+	return nil
+}
+
+// candidatesSQL is the candidates statement for a claim that names shopCount
+// shops. $1 is the limit, and $2 the shop (one shop) or the shops (several).
+//
+// Separate statements rather than one with an optional filter, so the planner can use
+// jobs_queued_shop for a claim that names its shops. A claim for one shop, which is every
+// DRR claim, states the shop as a range and orders by shop_id first. The planner can't
+// fold that into a constant, so jobs_queued_shop is the only index that supplies the
+// order, and with sorts off (noPlannerSort) it is the only plan. (With shop_id = $2 the
+// planner walks jobs_queued_fifo past a flooding shop's whole backlog to find a small
+// shop's job: 5 ms against 0.04 ms at 50,000 queued jobs.) The rows are the same, as they
+// all belong to one shop. Several shops (FIFO) need the oldest across them.
+func candidatesSQL(shopCount int) string {
+	const head = `SELECT id, shop_id, cost FROM jobs WHERE state = 'queued' AND run_at <= statement_timestamp()`
+	const tail = ` LIMIT $1 FOR NO KEY UPDATE SKIP LOCKED`
+	switch shopCount {
+	case 0:
+		return head + ` ORDER BY run_at, id` + tail
+	case 1:
+		return head + ` AND shop_id >= $2 AND shop_id <= $2 ORDER BY shop_id, run_at, id` + tail
+	default:
+		return head + ` AND shop_id = ANY($2) ORDER BY run_at, id` + tail
+	}
 }
 
 // shopRoom takes each candidate shop's claim lock, in shop-ID order, and returns
@@ -206,18 +245,33 @@ func shopRoom(ctx context.Context, tx pgx.Tx, cands []candidate, limits map[stri
 	return room, nil
 }
 
-// claimRows turns the locked jobs ids into running jobs, the i-th for owners[i].
-func claimRows(ctx context.Context, tx pgx.Tx, ids []int64, owners []string) ([]Claimed, error) {
-	rows, err := tx.Query(ctx, `
+// claimRowsSQL starts the locked candidates. The jobs are found by primary key, with
+// j.id = ANY($1), and each takes its owner from the same position in $2. Two forms the
+// planner can be misled into are avoided, each costing tens of milliseconds of CPU per
+// claim just after a flood, when its statistics are stale (D-060):
+//   - Joining jobs to unnest($1) is planned as a nested loop with a join filter over
+//     every queued row (142,000 buffers with 70,000 queued, against 1,600).
+//   - Writing the check as j.state = 'queued' lets the planner use the partial index
+//     jobs_queued_fifo, which its statistics say is nearly empty, and filter by id. So the
+//     check is on j.state concatenated with an empty string, which no partial index can be
+//     proved to cover.
+//
+// The check is still made: only a queued job is started. The ids are distinct, so
+// array_position finds each one.
+const claimRowsSQL = `
 		UPDATE jobs j
-		   SET state = 'running', claim_seq = j.claim_seq + 1, lease_owner = c.owner,
+		   SET state = 'running', claim_seq = j.claim_seq + 1,
+		       lease_owner = ($2::text[])[array_position($1::bigint[], j.id)],
 		       lease_expires_at = statement_timestamp() + k.lease_ms * interval '1 millisecond',
 		       first_claimed_at = coalesce(j.first_claimed_at, statement_timestamp())
-		  FROM unnest($1::bigint[], $2::text[]) AS c (id, owner), job_kinds k
-		 WHERE j.id = c.id AND k.kind = j.kind AND j.state = 'queued'
+		  FROM job_kinds k
+		 WHERE j.id = ANY($1::bigint[]) AND k.kind = j.kind AND (j.state || '') = 'queued'
 		RETURNING j.id, j.shop_id, j.kind, j.payload, j.claim_seq, j.attempts, j.lease_owner,
-		          k.lease_ms, k.heartbeat_ms, k.timeout_ms, statement_timestamp(), j.lease_expires_at`,
-		ids, owners)
+		          k.lease_ms, k.heartbeat_ms, k.timeout_ms, statement_timestamp(), j.lease_expires_at`
+
+// claimRows turns the locked jobs ids into running jobs, the i-th for owners[i].
+func claimRows(ctx context.Context, tx pgx.Tx, ids []int64, owners []string) ([]Claimed, error) {
+	rows, err := tx.Query(ctx, claimRowsSQL, ids, owners)
 	if err != nil {
 		return nil, fmt.Errorf("store: claim: %w", err)
 	}
@@ -261,24 +315,42 @@ type ShopSnapshot struct {
 	Throttled bool
 }
 
+// snapshotShopsSQL is SnapshotShops's statement. A shop is runnable when its oldest queued
+// job's run_at has passed. That is asked of jobs_queued_shop alone, with the shop as a
+// range and an order by shop_id first (see candidatesSQL), and it runs with planner sorts
+// off (noPlannerSort). The equivalent EXISTS is planned as a sequential scan of jobs, and
+// min(run_at) as a scan of jobs_queued_fifo that discards the flooding shop's backlog.
+// Each costs tens of milliseconds on every refresh once the table is large or the
+// backlog skewed.
+const snapshotShopsSQL = `
+		SELECT s.id, s.weight, s.max_concurrency, s.rate_per_sec, s.rate_burst,
+		       (SELECT count(*) FROM jobs j WHERE j.shop_id = s.id AND j.state = 'running'),
+		       coalesce((SELECT j.run_at FROM jobs j WHERE j.state = 'queued' AND j.shop_id >= s.id AND j.shop_id <= s.id
+		                 ORDER BY j.shop_id, j.run_at LIMIT 1) <= statement_timestamp(), false),
+		       coalesce(st.throttled_until > statement_timestamp(), false)
+		  FROM shops s JOIN shop_state st ON st.shop_id = s.id
+		 ORDER BY s.id`
+
 // SnapshotShops reads every shop's settings and state in one statement, so
 // "now" is one instant for all of them. Both time comparisons use the database
 // clock, statement_timestamp(), as the claim transaction does. The result only
 // hints at what a claim can do: the claim transaction is the authority (design §6.1).
 func SnapshotShops(ctx context.Context, db DB) ([]ShopSnapshot, error) {
-	rows, err := db.Query(ctx, `
-		SELECT s.id, s.weight, s.max_concurrency, s.rate_per_sec, s.rate_burst,
-		       (SELECT count(*) FROM jobs j WHERE j.shop_id = s.id AND j.state = 'running'),
-		       EXISTS (SELECT 1 FROM jobs j WHERE j.shop_id = s.id AND j.state = 'queued' AND j.run_at <= statement_timestamp()),
-		       coalesce(st.throttled_until > statement_timestamp(), false)
-		  FROM shops s JOIN shop_state st ON st.shop_id = s.id
-		 ORDER BY s.id`)
-	if err != nil {
-		return nil, fmt.Errorf("store: snapshot shops: %w", err)
-	}
-	snaps, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (ShopSnapshot, error) {
-		var s ShopSnapshot
-		return s, row.Scan(&s.ID, &s.Weight, &s.MaxConcurrency, &s.RatePerSec, &s.RateBurst, &s.Running, &s.Runnable, &s.Throttled)
+	var snaps []ShopSnapshot
+	// One transaction, so that sorts can be turned off for the one statement.
+	err := pgx.BeginFunc(ctx, db, func(tx pgx.Tx) error {
+		if err := noPlannerSort(ctx, tx); err != nil {
+			return err
+		}
+		rows, err := tx.Query(ctx, snapshotShopsSQL)
+		if err != nil {
+			return err
+		}
+		snaps, err = pgx.CollectRows(rows, func(row pgx.CollectableRow) (ShopSnapshot, error) {
+			var s ShopSnapshot
+			return s, row.Scan(&s.ID, &s.Weight, &s.MaxConcurrency, &s.RatePerSec, &s.RateBurst, &s.Running, &s.Runnable, &s.Throttled)
+		})
+		return err
 	})
 	if err != nil {
 		return nil, fmt.Errorf("store: snapshot shops: %w", err)

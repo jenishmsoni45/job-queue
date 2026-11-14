@@ -12,6 +12,8 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/jenishmsoni45/job-queue/internal/adminapi"
+	"github.com/jenishmsoni45/job-queue/internal/handlers"
 	"github.com/jenishmsoni45/job-queue/internal/queue"
 )
 
@@ -28,11 +30,13 @@ const (
 	// Hang sleeps payload.ms milliseconds and ignores cancellation, like a
 	// handler stuck in a call with no context.
 	Hang = "test.hang"
-	// Effect waits payload.ms milliseconds, stopping early if cancelled, then
-	// writes one row (job_id, claim_seq) to the test_effects table through
-	// run.Tx(). The row commits only with the fenced completion, so a completed
-	// job has exactly one row and any other job has none (design §18, AC-7.2).
-	// The table must exist: create it with EffectsTableSQL.
+	// Effect waits payload.ms milliseconds, stopping early if cancelled. With a
+	// payload.order_id it then tags that order through mockshop's Admin API, as
+	// order.tag does, with the Idempotency-Key "job-<id>-tag" (design §18, from
+	// phase 5). Last, it writes one row (job_id, claim_seq) to the test_effects
+	// table through run.Tx(). The row commits only with the fenced completion,
+	// so a completed job has exactly one row and any other job has none (design
+	// §18, AC-7.2). The table must exist: create it with EffectsTableSQL.
 	Effect = "test.effect"
 )
 
@@ -50,15 +54,28 @@ type Payload struct {
 	FailTimes int    `json:"fail_times,omitempty"`
 	Permanent bool   `json:"permanent,omitempty"`
 	Message   string `json:"message,omitempty"`
+	OrderID   int64  `json:"order_id,omitempty"`
 }
 
+// Option configures the test kinds.
+type Option func(*options)
+
+type options struct{ admin *adminapi.Client }
+
+// WithAdminAPI gives Effect the Admin API client its order_id calls use.
+func WithAdminAPI(c *adminapi.Client) Option { return func(o *options) { o.admin = c } }
+
 // Register adds every test kind to r.
-func Register(r *queue.Registry) {
+func Register(r *queue.Registry, opts ...Option) {
+	var o options
+	for _, opt := range opts {
+		opt(&o)
+	}
 	r.Register(Sleep, sleep)
 	r.Register(Fail, fail)
 	r.Register(Panic, panicking)
 	r.Register(Hang, hang)
-	r.Register(Effect, effect)
+	r.Register(Effect, func(ctx context.Context, run *queue.Run) error { return effect(ctx, run, o.admin) })
 }
 
 func decode(run *queue.Run) (Payload, error) {
@@ -124,9 +141,18 @@ func hang(_ context.Context, run *queue.Run) error {
 	return nil
 }
 
-func effect(ctx context.Context, run *queue.Run) error {
-	if err := sleep(ctx, run); err != nil {
+func effect(ctx context.Context, run *queue.Run, admin *adminapi.Client) error {
+	p, err := decode(run)
+	if err != nil {
 		return err
+	}
+	if err := handlers.Sleep(ctx, time.Duration(p.MS)*time.Millisecond); err != nil {
+		return err
+	}
+	if p.OrderID > 0 {
+		if err := handlers.TagOrder(ctx, admin, run.Job.Shop, run.Job.ID, p.OrderID); err != nil {
+			return err
+		}
 	}
 	tx, err := run.Tx(ctx)
 	if err != nil {

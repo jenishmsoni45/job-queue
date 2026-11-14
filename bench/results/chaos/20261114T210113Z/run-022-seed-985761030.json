@@ -1,0 +1,141 @@
+{
+  "seed": 985761030,
+  "started": "2026-11-14T21:10:44.212452843Z",
+  "duration_ms": 30885,
+  "passed": true,
+  "jobs": {
+    "planned": 2000,
+    "accepted": 2000,
+    "enqueue_retries": 0,
+    "duplicates": 0,
+    "completed": 2000,
+    "dead": 0,
+    "not_terminal": 0
+  },
+  "faults": [
+    {
+      "kind": "kill_worker",
+      "target": "worker-1",
+      "at_ms": 654,
+      "duration_ms": 2230,
+      "applied_ms": 654,
+      "reverted_ms": 3030
+    },
+    {
+      "kind": "kill_worker",
+      "target": "worker-2",
+      "at_ms": 4867,
+      "duration_ms": 1627,
+      "applied_ms": 4867,
+      "reverted_ms": 6640
+    },
+    {
+      "kind": "kill_worker",
+      "target": "worker-1",
+      "at_ms": 11426,
+      "duration_ms": 2909,
+      "applied_ms": 11427,
+      "reverted_ms": 14485
+    },
+    {
+      "kind": "timeout",
+      "target": "pg-dispatcher",
+      "at_ms": 14973,
+      "duration_ms": 4897,
+      "stream": "upstream",
+      "attributes": {
+        "timeout": 2554
+      },
+      "applied_ms": 14974,
+      "reverted_ms": 19879
+    },
+    {
+      "kind": "pause_worker",
+      "target": "worker-2",
+      "at_ms": 15097,
+      "duration_ms": 4392,
+      "applied_ms": 15098,
+      "reverted_ms": 19544
+    },
+    {
+      "kind": "latency",
+      "target": "pg-worker-2",
+      "at_ms": 22803,
+      "duration_ms": 1115,
+      "stream": "downstream",
+      "attributes": {
+        "jitter": 37,
+        "latency": 66
+      },
+      "applied_ms": 22804,
+      "reverted_ms": 23928
+    },
+    {
+      "kind": "reset_peer",
+      "target": "pg-dispatcher",
+      "at_ms": 26456,
+      "duration_ms": 2608,
+      "stream": "downstream",
+      "attributes": {
+        "timeout": 842
+      },
+      "applied_ms": 26456,
+      "reverted_ms": 29067
+    },
+    {
+      "kind": "reset_peer",
+      "target": "pg-worker-1",
+      "at_ms": 28071,
+      "duration_ms": 1235,
+      "stream": "upstream",
+      "attributes": {
+        "timeout": 137
+      },
+      "applied_ms": 28072,
+      "reverted_ms": 29310
+    }
+  ],
+  "samples": {
+    "taken": 30,
+    "skipped": 0,
+    "backlog_mismatched": 0,
+    "connections_seen": 285
+  },
+  "checks": [
+    {
+      "name": "q1_every_accepted_job_completed_or_dead",
+      "passed": true,
+      "detail": "2000 accepted: 2000 completed, 0 dead"
+    },
+    {
+      "name": "q4_one_job_per_dedupe_key",
+      "passed": true,
+      "detail": "2000 keys, 2000 jobs"
+    },
+    {
+      "name": "q3_no_overlapping_leases",
+      "passed": true,
+      "detail": "2024 leases checked"
+    },
+    {
+      "name": "backlog_counter_matches_real_count",
+      "passed": true,
+      "detail": "30 samples during the run and one at the end matched"
+    },
+    {
+      "name": "run_tx_effect_applied_once",
+      "passed": true,
+      "detail": "2000 effects"
+    },
+    {
+      "name": "workers_and_dispatcher_reach_postgres_through_toxiproxy",
+      "passed": true,
+      "detail": "303 connections seen across the run's samples, all through toxiproxy"
+    },
+    {
+      "name": "nfr11_one_mockshop_mutation_per_completed_job",
+      "passed": true,
+      "detail": "2000 completed jobs, 2000 mutations applied for the run's jobs"
+    }
+  ]
+}

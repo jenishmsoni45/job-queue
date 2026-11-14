@@ -47,3 +47,14 @@ func (b Backoff) Delay(attempts int32) time.Duration {
 	}
 	return time.Duration(rand.Int64N(int64(bound))) //nolint:gosec // jitter, not a secret
 }
+
+// ThrottleJitter draws the jitter added to a throttle's wait: uniform in
+// [0, 10% of retryAfter) (design §2), so jobs throttled together don't all come
+// back at the same instant.
+func ThrottleJitter(retryAfter time.Duration) time.Duration {
+	bound := retryAfter / 10
+	if bound <= 0 {
+		return 0
+	}
+	return time.Duration(rand.Int64N(int64(bound))) //nolint:gosec // jitter, not a secret
+}

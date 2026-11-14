@@ -55,6 +55,18 @@ Each entry gives the question, the options considered, the decision and its cons
 | D-047 | The row lock claims and the reaper take | Phase 3: found by the AC-7.1 test | Decided |
 | D-048 | What a batch enqueue returns | Phase 4: gap in design §11.1 | Decided |
 | D-049 | What a rejected batch adds to `shed_total` | Phase 4: gap in design §5.2 | Decided |
+| D-050 | Where `mockshop`, `loadgen` and dedupe-window settings live | Phase 5: gap in design §11.4 | Decided |
+| D-051 | Which time puts a job in an NFR-9 bucket | Phase 5: gap in NFR-9 and design §17 | Decided |
+| D-052 | Which bench outputs are committed | Phase 5: gap in design §17 | Decided |
+| D-053 | Where `make bench` runs | Phase 5: gap in design §17 | Decided |
+| D-054 | The webhook rate in the `make up` stack | Phase 5: gap in design §12 | Decided |
+| D-055 | The throttle-storm scenario | Phase 5: optional scope (D-010) | Decided |
+| D-056 | When `loadgen` stops after the spike | Phase 5: design §17 never ends | Decided |
+| D-057 | NFR-12's warm-up window ends one tick early | Phase 5: first bench run, NFR-12 measured the spike's first tick | Decided |
+| D-058 | Plan-proof claim and snapshot queries | Phase 5: first bench run, NFR-9 failed | Decided |
+| D-059 | Planner sorts off for the claim and the snapshot | Phase 5: second bench run, NFR-9 failed at spike onset | Decided |
+| D-060 | The claim's UPDATE finds jobs by primary key | Phase 5: third bench run, NFR-9 failed at spike onset | Decided |
+| D-061 | Go 1.27.4 for GO-2026-6859 | Phase 5: `make audit` failed | Decided |
 
 ---
 
@@ -735,3 +747,169 @@ Each entry gives the question, the options considered, the decision and its cons
 - **Decision:** A (the user's choice). A rejected single enqueue adds 1.
 - **Why not B:** it counts jobs that admission never refused. Duplicates don't count toward the limit (AC-2.3), so they are not shed either.
 - **Consequences:** a rejected batch still reads its existing dedupe keys before it takes the shop row lock, as an accepted one does. `shed_total` is written in the same transaction as the check, under the lock.
+
+## D-050 · Where `mockshop`, `loadgen` and dedupe-window settings live
+
+- **Date:** 2026-11-11 · **Phase:** 5 · **Source:** Gap. Phase 5 needs settings for `mockshop` (each shop's Admin API bucket, webhook rates, duplicate odds, retries) and for `loadgen` (seed, tick, rates, spike). Design §11.4 says config validation rejects a `mockshop` retry horizon that isn't shorter than the dedupe window, but the dedupe window was an environment setting of the dispatcher only (`QUEUED_DEDUPE_WINDOW_MS`), so no single process could compare the two.
+- **Options:**
+  - A. One config file. Each shop gains `mock_api_capacity`, `mock_api_leak_per_sec` and `webhooks_per_sec`. A top-level `dedupe_window_ms` replaces the environment setting. New sections: `mockshop` (retry horizon, backoff, delivery timeout, duplicate odds) and an optional `loadgen` (seed, tick, rates, spike).
+  - B. Separate files per tool, with the dedupe window kept in the environment and read by `mockshop` too.
+  - C. Environment variables for everything new.
+- **Decision:** A (the user's choice). Design §2, §11.4 and §12 now say so (approved by the user).
+  - Every process validates the whole file, including that the retry horizon is shorter than the dedupe window (D-018).
+  - The `loadgen` section is optional; `loadgen` refuses a file without one. `config/shops.json` has none, and `bench/blackfriday.json` has one.
+- **Why not B:** the dispatcher and `mockshop` could be given different windows, and D-019 and design §17 each expect one file.
+- **Why not C:** per-shop buckets (D-010) don't fit environment variables, and the bench config would no longer be one committed file.
+
+## D-051 · Which time puts a job in an NFR-9 bucket
+
+- **Date:** 2026-11-11 · **Phase:** 5 · **Source:** Gap. NFR-9 checks each shop's p99 queue wait "in every 10 s bucket of the spike", and the chart plots p99 wait in 10 s buckets, but neither says which of a job's times decides its bucket.
+- **Options:**
+  - A. Its arrival: `first_runnable_at`.
+  - B. Its first claim: `first_claimed_at`, as the console's read API window does (design §11.1).
+- **Decision:** A (the user's choice). Design §17 now says so (approved by the user).
+  - Every job that arrived during the spike is checked, including one claimed after the spike ended.
+  - The chart uses the same buckets, aligned to the run's first arrival.
+- **Why not B:** a job that arrived during the spike but was claimed after it would fall outside the spike's buckets, so the check would be looser.
+
+## D-052 · Which bench outputs are committed
+
+- **Date:** 2026-11-11 · **Phase:** 5 · **Source:** Gap. `make bench` exports per-job timestamps for each run, and each run has hundreds of thousands of jobs. D-022 commits result files, but design §17 doesn't say whether that includes the raw exports.
+- **Options:**
+  - A. Write the raw exports gzipped under `bench/results/<timestamp>/<run>/raw/`, git-ignored. Commit everything else.
+  - B. Commit the gzipped raw exports too.
+  - C. Commit raw, uncompressed exports.
+- **Decision:** A (the user's choice). Design §17 now says so (approved by the user).
+  - Each run's committed summary holds the per-shop, per-bucket series the chart is drawn from, so the chart and report can be rebuilt from committed files.
+  - README numbers are copied from `summary.json` (D-005).
+- **Why not B or C:** megabytes of permanent git history per bench run, when `make bench` regenerates the raw data.
+
+## D-053 · Where `make bench` runs
+
+- **Date:** 2026-11-11 · **Phase:** 5 · **Source:** Gap. Design §17 says each run "starts from a fresh database" but not on which Compose stack.
+- **Options:**
+  - A. Its own Compose project, `jobqueue-bench`, as chaos has (D-042).
+  - B. The `make up` stack, wiped before each run.
+- **Decision:** A (the user's choice). Design §17 now says so (approved by the user).
+  - The bench stack reads `bench/blackfriday.json` and publishes no ports. For each scheduler it is brought up fresh, with its volume removed, and `make bench` removes it when it ends, pass or fail. `make down` removes it too.
+  - A running `make up` stack would compete for CPU, which the report can't detect, so the docs say to stop it first.
+- **Why not B:** `make bench` would destroy the development database and leave the stack in bench settings.
+
+## D-054 · The webhook rate in the `make up` stack
+
+- **Date:** 2026-11-11 · **Phase:** 5 · **Source:** Gap. Design §12 says the webhook sender emits webhooks "at configured rates" without saying what `config/shops.json` sets.
+- **Options:**
+  - A. A low steady rate: 1 webhook per second per shop, with some duplicates.
+  - B. Off: 0 per shop.
+- **Decision:** A (the user's choice).
+  - `make up` runs the whole Shopify path live: HMAC, dedupe, `order.tag` and Admin API calls. The console in phase 6 has something to show without the bench.
+  - Bench, chaos and test configs set the rate to 0; they enqueue directly.
+  - Completed jobs stay in the development database until the pruner removes them (D-015).
+- **Why not B:** the running stack would never exercise the sender unless the config were edited.
+
+## D-055 · The throttle-storm scenario
+
+- **Date:** 2026-11-11 · **Phase:** 5 · **Source:** Phase 5 lists the throttle-storm bench scenario as optional (D-010, design §17).
+- **Options:**
+  - A. A follow-up.
+  - B. Build it in phase 5 as a third bench run, reported but not targeted.
+- **Decision:** A (the user's choice). It is listed under Follow-ups in the phase 5 PR.
+- **Why not B:** the phase is already large, and Q7 and the P5-2 tests prove throttle handling against a capacity-1 bucket.
+
+## D-056 · When `loadgen` stops after the spike
+
+- **Date:** 2026-11-11 · **Phase:** 5 · **Source:** Gap. Design §17 says that after the spike "every shop is back at the steady rate until every accepted job is done", but steady arrivals keep adding accepted jobs, so read literally the run never ends.
+- **Options:**
+  - A. Keep the steady rate until every job accepted before the spike ended is terminal, then stop sending.
+  - B. Send the steady rate for a fixed tail after the spike, then stop.
+- **Decision:** A (the user's choice). Design §17 now says so (approved by the user).
+  - `loadgen` remembers each shop's last job accepted before the spike ended and polls `GET /v1/jobs/{id}` for them. A shop's jobs are claimed oldest first, so once those are terminal, the spike's backlog has drained.
+  - A setting, `drain_max_ms`, bounds the tail if the drain never finishes.
+  - `make bench` then waits until every accepted job is terminal, including the last steady ones.
+- **Why not B:** if the drain outlasted the tail, the end of the drain would have no arrivals, and the chart couldn't show the other shops recovering.
+
+## D-057 · NFR-12's warm-up window ends one tick early
+
+- **Date:** 2026-11-12 · **Phase:** 5 · **Source:** Mid-phase surprise. The first complete `make bench` failed NFR-12 for shop 1 in both runs, with a max backlog of 224 against the limit of 40.
+- **Finding:** the bench analysis takes T0 from the first arrival, which trails loadgen's own start by a few ms, and it ends the warm-up at T0 + `warmup_ms`. Loadgen starts the spike at its own start + `warmup_ms`, so the spike shop's first spike tick (about 200 jobs at 2,000 jobs/s and a 100 ms tick) was enqueued about 5 ms before the window ended and was counted as warm-up backlog. The raw data of both runs show 224 shop-1 jobs in that tick. Every other shop peaked at 8–12 jobs.
+- **Options:**
+  - A. End the NFR-12 window one `tick_ms` before T0 + `warmup_ms`.
+  - B. Pass loadgen's start time into the analysis and anchor the phases to it.
+  - C. Leave it, and report NFR-12 as failed.
+- **Decision:** A (the user chose to fix the analysis).
+  - Only the analysis changes. The target (a backlog of at most 2 s of arrivals) and the buckets (D-051) are unchanged.
+  - T0 trails loadgen's start by less than one tick, so a window that ends one tick early keeps the spike's first tick out, and it drops at most one tick of steady arrivals.
+  - `internal/bench` has a test with a 200-job tick 5 ms before the end (passes) and one a full tick earlier (fails).
+- **Why not B:** loadgen's clock and the database clock are different processes, and the margin would be a few ms.
+- **Why not C:** it would fail a baseline check on a spike that has not started yet.
+
+## D-058 · Plan-proof claim and snapshot queries
+
+- **Date:** 2026-11-12 · **Phase:** 5 · **Source:** Mid-phase surprise. The first complete `make bench` failed NFR-9: shops 2–10's p99 queue wait in the spike was 78–93 s against bounds of about 200 ms, DRR completed 169 jobs/s against FIFO's 413, and DRR's drain timed out.
+- **Finding:** measured on the bench stack with the real `loadgen`, not assumed.
+  - The claim for a small shop (shop 2's one queued job, newer than shop 1's 50,000-job backlog) was planned as a scan of `jobs_queued_fifo` that discarded 49,837 rows: 1,599 buffers and 3.9 ms, against 0.04 ms on `jobs_queued_shop`. It was the active query in 35 of 60 samples, and Postgres sat at 100% of one core from spike onset.
+  - The dispatcher's refresh planned its per-shop "has a runnable job" test as a sequential scan of `jobs` (28 ms per refresh live, 165 ms in a worse heap layout).
+  - Both are planner misestimates: its statistics span completed rows, so it thinks a small shop's queued jobs are common. They are worst just after a flood, before ANALYZE catches up, which is when NFR-9 is measured.
+  - Raising the DRR quantum, the first guess, did not help: a quantum of 10 made the spike's p99 worse (250–475 ms against 70–250 ms).
+- **Options:**
+  - A. State the shop as a range, `shop_id >= $2 AND shop_id <= $2`, and order by `shop_id` first, in the single-shop claim and in the snapshot's runnable test. Only `jobs_queued_shop` then supplies the order without a sort, whatever the statistics say.
+  - B. Add extended statistics on (state, shop_id) in a migration.
+  - C. Raise the DRR quantum.
+- **Decision:** A (the user asked for the diagnosis and the fix; the design's SQL, `WHERE shop_id = $shop`, selects the same rows).
+  - **Superseded in part by D-059:** the range-and-order form alone is not plan-proof. It holds only while the planner's statistics are fresh.
+  - Targets, requirements and design docs are unchanged. FIFO's multi-shop claim is unchanged.
+  - `internal/store` has a test that builds a flooding shop beside a quiet one, runs ANALYZE, and checks both statements' plans use `jobs_queued_shop` and no sequential scan of `jobs`.
+  - On the scaled bench (60 s spike, 5 CPUs) shops 2–10's p99 per 10 s bucket went from stalls of 1–2.5 s to 67–176 ms, except the first spike bucket (245 ms against 208 ms). Total throughput rose from about 280–340 to about 500 jobs/s. The full `make bench` still has to confirm it.
+- **Why not B:** the statistics only help after ANALYZE, which is the moment they are wrong, and it needs a schema change and a design edit.
+- **Why not C:** measured to be worse, and it loosens the Q6 tolerance (D-026).
+
+## D-059 · Planner sorts off for the claim and the snapshot
+
+- **Date:** 2026-11-13 · **Phase:** 5 · **Source:** Mid-phase surprise. After D-058, a full `make bench` passed NFR-11, NFR-12 and every validity check, and DRR matched FIFO's throughput (417 jobs/s each). NFR-9 still failed, but only at spike onset: the four buckets from 120 s to 160 s had p99 up to 16.9 s, and all 26 later buckets passed for every shop.
+- **Finding:** measured on the bench stack with a 120 s warm-up and a 40 s spike.
+  - While shop 1's flood was admitted (2,000 jobs/s until the 50,000-job backlog limit), total completions fell from about 400 to about 35 jobs/s, and recovered the moment enqueues were shed. One backend, the dispatcher's, used 296 of 323 CPU ticks in 3 s.
+  - `auto_explain` caught the snapshot D-058 wrote as a scan of `jobs_queued_fifo` plus a top-N Sort, once per shop: 18,392 buffers and 46 ms. The planner's statistics were stale just after the flood, so it estimated one matching row, and a Sort of one row looks cheap. The dispatcher runs the snapshot on every wake, and every enqueue wakes it.
+  - The claim's candidates statement is planned the same way under stale statistics (a Sort over `jobs_queued_fifo`, 635 buffers against 4).
+  - A Postgres-only stack that reproduces "ANALYZE ran before the flood" shows `SET LOCAL enable_sort = off` gives `jobs_queued_shop` alone for both: 41 buffers and 0.05 ms for the snapshot, 0.034 ms for the claim.
+- **Options:**
+  - A. Keep D-058's statements, and run the claim transaction and the snapshot with `SET LOCAL enable_sort = off`.
+  - B. Replace the snapshot's "has a runnable job" test with `shop_state.backlog`. This changes design §6.1.
+  - C. Extended statistics and more frequent ANALYZE on `jobs`. They lag the flood by the autovacuum interval, which is when they are wrong.
+- **Decision:** A (the user asked for the diagnosis, and this follows from it).
+  - Statements, rows, locks and fencing are unchanged. A disabled Sort is costed, not forbidden, so a statement with no other plan still runs. FIFO's claim runs in the same transaction setup (AC-9.3).
+  - The snapshot now runs in a one-statement transaction so the setting can be local.
+  - `internal/store` has a test that analyses the table while it holds only finished jobs, adds a 45,000-job flood and one quiet-shop job without a new ANALYZE, and checks both statements' plans use `jobs_queued_shop` alone. It fails when sorts are allowed.
+  - On the bench stack with a 120 s warm-up and a 40 s spike, shops 2–10 stayed at 180–194 jobs/s through onset and the four onset buckets' worst p99 was 53–85 ms against a bound of 190 ms. The full `make bench` still has to confirm it.
+- **Why not B:** a design change that gives up the check for a queued job whose `run_at` has passed.
+- **Why not C:** see C above.
+
+## D-060 · The claim's UPDATE finds jobs by primary key
+
+- **Date:** 2026-11-14 · **Phase:** 5 · **Source:** Mid-phase surprise. After D-059, a full `make bench` passed NFR-11, NFR-12 and the FIFO validity checks, but NFR-9 still failed at spike onset. Shops 2–10 had p99 of 4.9–17.2 s from 120 s to 160 s, against a bound of about 187 ms, and completions fell from about 180 to about 66 jobs/s. Everything from 160 s on passed except two buckets at 220–230 s.
+- **Finding:** measured on the bench stack with the real config and an onset-only run.
+  - Sampling `pg_stat_activity` at t=139–147 s caught the claim's `UPDATE jobs j ... FROM unnest($1, $2) c, job_kinds k WHERE j.id = c.id ...` using 15–23 ms of CPU per call. Others' completions fell from 190 to 100 jobs/s, and recovered after autoanalyze at about t=145 s.
+  - With the jobs statistics stale after the flood, the planner chose a nested loop with a join filter `c.id = j.id` over every queued row. `EXPLAIN` showed 142,000 buffers with 70,000 queued jobs, against about 1,600 with fresh statistics.
+  - Finding jobs with `j.id = ANY($1)` was not enough. The `state = 'queued'` check lets the planner use the partial index `jobs_queued_fifo`, whose statistics say it is nearly empty, and filter by id. The plan test caught that.
+- **Options:**
+  - A. Find the jobs with `j.id = ANY($1)`, take each owner from the same position of `$2`, and write the state check as `(j.state || '') = 'queued'`, which no partial index can be proved to cover.
+  - B. Run ANALYZE on `jobs` more often. It lags the flood by the autovacuum interval, which is when the statistics are wrong.
+  - C. Turn off nested loops for the claim transaction. A blunter setting that affects the other statements in it.
+- **Decision:** A (the user approved the fix on 2026-11-14).
+  - The rows updated, the locks, the fencing and the `claim_seq` increment are unchanged. A job that is not queued is still not started, and the claim still fails if fewer rows are updated than candidates.
+  - `internal/store` has a test that builds the stale-statistics state of D-059 and checks the UPDATE is planned on `jobs_pkey` with no sequential scan and no scan of the queue's indexes.
+- **Why not B:** see B above.
+- **Why not C:** it changes the plan of statements that are already fine, and still leaves the choice to the planner.
+
+## D-061 · Go 1.27.4 for GO-2026-6859
+
+- **Date:** 2026-11-14 · **Phase:** 5 · **Source:** Mid-phase surprise. `make audit` failed with GO-2026-6859, a `net/http` vulnerability in the Go 1.27.3 standard library, fixed in 1.27.4. `govulncheck` reaches it through `pgtest.New`, which calls `pgx.ParseConfig`.
+- **Options:**
+  - A. Move the Go pin from 1.27.3 to 1.27.4 in `go.mod`, `Dockerfile` and `tools/Dockerfile`, with the digest of the official `golang:1.27.4-trixie` multi-arch index.
+  - B. Leave the pin and report the failing audit in the PR.
+  - C. Make the bump a separate PR.
+- **Decision:** A (the user's choice).
+  - The new digest is `sha256:b54b2639de8c1bfe538ec5ffc45f29b1932235ac5f6d63c059853646677112d9`, read from the registry's index for `golang:1.27.4-trixie`. The image is the same official one, one patch release newer, and it runs only in Docker.
+  - After the change `make audit` reports no vulnerabilities in either `govulncheck` or `npm audit`.
+  - The bench runs and the chaos run in this phase's results were built with Go 1.27.3. A patch release changes no behaviour this project depends on, but the results were not repeated on 1.27.4.
+- **Why not B:** CLAUDE.md requires `make audit` to pass.
+- **Why not C:** the bump is two lines of pins and the PR needs a passing audit now.

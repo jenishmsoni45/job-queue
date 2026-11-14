@@ -10,6 +10,7 @@ import (
 	"maps"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -17,13 +18,19 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jenishmsoni45/job-queue/internal/config"
 	"github.com/jenishmsoni45/job-queue/internal/httpserver"
+	"github.com/jenishmsoni45/job-queue/internal/mockshop"
 	"github.com/jenishmsoni45/job-queue/internal/pgtest"
 	"github.com/jenishmsoni45/job-queue/internal/scheduler"
+	"github.com/jenishmsoni45/job-queue/internal/webhook"
 	"github.com/jenishmsoni45/job-queue/migrations"
 )
 
-const testConfig = "../../tests/testdata/shops.json"
+const (
+	testConfig = "../../tests/testdata/shops.json"
+	testSecret = "test-webhook-secret" //nolint:gosec // a dummy test secret, not a credential
+)
 
 // freeAddr returns a loopback address with a port that was free a moment ago.
 func freeAddr(t *testing.T) string {
@@ -55,6 +62,7 @@ func roleEnv(db *pgtest.DB, extra map[string]string) map[string]string {
 		"QUEUED_BACKOFF_BASE_MS":  "10",
 		"QUEUED_BACKOFF_CAP_MS":   "100",
 		"QUEUED_WORKER_SLOTS":     "2",
+		"SHOPIFY_WEBHOOK_SECRET":  testSecret,
 	}
 	maps.Copy(vars, extra)
 	return vars
@@ -190,6 +198,60 @@ func TestRolesRunAJobEndToEnd(t *testing.T) {
 	}
 }
 
+// The Shopify path end to end through the three roles, in process (design
+// §11.1, §12, D-020): a signed orders/create webhook posted to api becomes an
+// order.tag job, which the worker, with its production handlers and
+// QUEUED_MOCKSHOP_URL pointing at an in-process mockshop, runs to completion,
+// tagging the order once with the key job-<id>-tag.
+func TestRolesRunAWebhookEndToEnd(t *testing.T) {
+	db := pgtest.NewMigrated(t)
+	cfg, err := config.Load(testConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	shop := mockshop.NewAPI(cfg, nil)
+	mux := http.NewServeMux()
+	shop.Register(mux)
+	ms := httptest.NewServer(mux)
+	defer ms.Close()
+
+	apiAddr := startRole(t, "api", roleEnv(db, nil))
+	dispatcherAddr := startRole(t, "dispatcher", roleEnv(db, nil))
+	startRole(t, "worker", roleEnv(db, map[string]string{
+		"QUEUED_DISPATCHER_URL": "http://" + dispatcherAddr,
+		"QUEUED_MOCKSHOP_URL":   ms.URL,
+	}))
+
+	wh, err := mockshop.NewWebhook([]byte(testSecret), "shop-a.test", 555, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := &mockshop.Sender{
+		Target: "http://" + apiAddr + webhook.Path, Secret: []byte(testSecret), HTTP: http.DefaultClient,
+		Settings: config.Mockshop{RetryHorizonMS: 5000, RetryBaseMS: 100, RetryCapMS: 1000, DeliveryTimeoutMS: 2000},
+	}
+	if out := s.Deliver(t.Context(), wh); !out.Delivered {
+		t.Fatalf("delivery: %+v", out)
+	}
+	var id int64
+	if err := db.Pool(t, "e2e", 2).QueryRow(t.Context(), `SELECT job_id FROM dedupe_keys WHERE key = $1`, wh.ID).Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+	var job struct{ State string }
+	deadline := time.Now().Add(15 * time.Second)
+	for job.State != "completed" {
+		if time.Now().After(deadline) {
+			t.Fatalf("job %d is %q after 15s, want completed", id, job.State)
+		}
+		time.Sleep(20 * time.Millisecond)
+		call(t, http.MethodGet, fmt.Sprintf("http://%s/v1/jobs/%d", apiAddr, id), "", &job)
+	}
+	m, _ := shop.Mutations("shop-a.test")
+	if m.Applied[fmt.Sprintf("job-%d-tag", id)] != 1 || len(m.Applied) != 1 {
+		t.Errorf("mutation log = %+v, want job-%d-tag applied once", m, id)
+	}
+}
+
 func call(t *testing.T, method, url, body string, out any) int {
 	t.Helper()
 	req, err := http.NewRequestWithContext(t.Context(), method, url, strings.NewReader(body))
@@ -205,6 +267,20 @@ func call(t *testing.T, method, url, body string, out any) int {
 		t.Fatalf("%s %s: decode: %v", method, url, err)
 	}
 	return resp.StatusCode
+}
+
+// The api role refuses to start without the webhook secret, since it could
+// check no webhook's HMAC (AC-8.1).
+func TestAPIRoleNeedsTheWebhookSecret(t *testing.T) {
+	db := pgtest.NewMigrated(t)
+	vars := roleEnv(db, map[string]string{"SHOPIFY_WEBHOOK_SECRET": "", "QUEUED_HTTP_ADDR": freeAddr(t)})
+	var stderr bytes.Buffer
+	if code := run(t.Context(), []string{"api"}, env(vars), &stderr); code != 1 {
+		t.Fatalf("exit %d, want 1", code)
+	}
+	if !strings.Contains(stderr.String(), "SHOPIFY_WEBHOOK_SECRET") {
+		t.Errorf("stderr = %q, want it to name the missing secret", stderr.String())
+	}
 }
 
 // Design §11.4: every role fails fast on a bad config file or setting.
@@ -242,8 +318,7 @@ func TestSettingsDefaults(t *testing.T) {
 	if s.configPath != "/etc/queued/shops.json" || s.dispatcherURL != "http://dispatcher:8080" || s.slots != 8 ||
 		s.refresh != 250*time.Millisecond || s.longPoll != 25*time.Second || s.reaperScan != 5*time.Second ||
 		s.backoff.Base != 2*time.Second || s.backoff.Cap != 5*time.Minute || s.drain != 8*time.Second || s.testHandlers ||
-		s.pruneInterval != time.Minute || s.retention.Completed != 24*time.Hour || s.retention.Discarded != 24*time.Hour ||
-		s.retention.DedupeKeys != 7*24*time.Hour {
+		s.pruneInterval != time.Minute || s.retention.Completed != 24*time.Hour || s.retention.Discarded != 24*time.Hour {
 		t.Errorf("defaults = %+v, want the design §2 settings", s)
 	}
 }
@@ -254,17 +329,33 @@ func TestPruneSettings(t *testing.T) {
 		"QUEUED_PRUNE_INTERVAL_MS":      "1000",
 		"QUEUED_COMPLETED_RETENTION_MS": "2000",
 		"QUEUED_DISCARDED_RETENTION_MS": "3000",
-		"QUEUED_DEDUPE_WINDOW_MS":       "4000",
 	}))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if s.pruneInterval != time.Second || s.retention.Completed != 2*time.Second ||
-		s.retention.Discarded != 3*time.Second || s.retention.DedupeKeys != 4*time.Second {
+	if s.pruneInterval != time.Second || s.retention.Completed != 2*time.Second || s.retention.Discarded != 3*time.Second {
 		t.Errorf("settings = %+v", s)
 	}
-	if _, err := loadSettings(env(map[string]string{"QUEUED_DEDUPE_WINDOW_MS": "0"})); err == nil {
-		t.Error("a zero dedupe window was accepted")
+	if _, err := loadSettings(env(map[string]string{"QUEUED_COMPLETED_RETENTION_MS": "0"})); err == nil {
+		t.Error("a zero retention window was accepted")
+	}
+}
+
+// D-050: the pruner's dedupe window is the config file's, the one mockshop's
+// retry horizon is checked against, and no environment setting overrides it.
+func TestDedupeWindowComesFromTheConfigFile(t *testing.T) {
+	s, err := loadSettings(env(map[string]string{"QUEUED_DEDUPE_WINDOW_MS": "4000"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(testConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.DedupeWindowMS = 9_000_000
+	r := retention(s, cfg)
+	if r.DedupeKeys != 9_000*time.Second || r.Completed != 24*time.Hour || r.Discarded != 24*time.Hour {
+		t.Errorf("retention = %+v, want the file's dedupe window and the default job windows", r)
 	}
 }
 

@@ -1,6 +1,10 @@
 // Package config loads and validates the shop and job-kind file, config/shops.json
 // (design §11.4, D-019). Every process validates it at startup and fails fast; the
 // api role then seeds the shops, shop_state and job_kinds tables from it.
+//
+// The same file carries the dedupe window, each shop's mockshop settings, the
+// mockshop webhook sender's settings and, for the bench, the loadgen settings, so
+// that every process can check them against each other (D-050).
 package config
 
 import (
@@ -17,8 +21,15 @@ import (
 
 // File is the whole config file.
 type File struct {
-	Shops []Shop `json:"shops"`
-	Kinds []Kind `json:"kinds"`
+	// DedupeWindowMS is how long a dedupe key is kept (D-018: 7 days). The
+	// pruner deletes older keys, and mockshop's retry horizon must be shorter.
+	DedupeWindowMS int64    `json:"dedupe_window_ms"`
+	Shops          []Shop   `json:"shops"`
+	Kinds          []Kind   `json:"kinds"`
+	Mockshop       Mockshop `json:"mockshop"`
+	// Loadgen is the bench load (design §17). Only bench files have it, and
+	// loadgen refuses a file without it.
+	Loadgen *Loadgen `json:"loadgen,omitempty"`
 }
 
 // Shop is one tenant and its limits.
@@ -30,6 +41,54 @@ type Shop struct {
 	RateBurst           int     `json:"rate_burst"`
 	BacklogLimit        int     `json:"backlog_limit"`
 	BacklogRetryAfterMS int     `json:"backlog_retry_after_ms"`
+	// MockAPICapacity and MockAPILeakPerSec are the shop's Admin API leaky
+	// bucket in mockshop (design §12, D-010).
+	MockAPICapacity   int     `json:"mock_api_capacity"`
+	MockAPILeakPerSec float64 `json:"mock_api_leak_per_sec"`
+	// WebhooksPerSec is how many orders/create webhooks mockshop sends for the
+	// shop each second; 0 sends none (D-054).
+	WebhooksPerSec float64 `json:"webhooks_per_sec"`
+}
+
+// Mockshop is the mockshop webhook sender's settings (design §12).
+type Mockshop struct {
+	// RetryHorizonMS is how long the sender keeps retrying one delivery,
+	// counted from its first attempt. It must be shorter than the dedupe window,
+	// so every redelivery maps to the job the first one created (D-018).
+	RetryHorizonMS int64 `json:"retry_horizon_ms"`
+	// RetryBaseMS and RetryCapMS shape the exponential backoff between retries.
+	// A Retry-After header longer than the backoff wins.
+	RetryBaseMS int `json:"retry_base_ms"`
+	RetryCapMS  int `json:"retry_cap_ms"`
+	// DeliveryTimeoutMS bounds one delivery attempt; a timeout is retried.
+	DeliveryTimeoutMS int `json:"delivery_timeout_ms"`
+	// DuplicateProbability is the chance a webhook is sent again later, after
+	// a uniform delay of up to DuplicateDelayMaxMS.
+	DuplicateProbability float64 `json:"duplicate_probability"`
+	DuplicateDelayMaxMS  int     `json:"duplicate_delay_max_ms"`
+	// ConcurrentDuplicateProbability is the chance a webhook is sent twice at once.
+	ConcurrentDuplicateProbability float64 `json:"concurrent_duplicate_probability"`
+}
+
+// Loadgen is the Black Friday load (design §17, D-009).
+type Loadgen struct {
+	// Seed seeds every shop's arrival schedule, so both runs get the same one.
+	Seed uint64 `json:"seed"`
+	// TickMS is how often loadgen sends: each tick's arrivals for a shop go as
+	// one batch.
+	TickMS int `json:"tick_ms"`
+	// RatePerShop is every shop's steady rate, in jobs per second.
+	RatePerShop float64 `json:"rate_per_shop"`
+	// WarmupMS is how long every shop sends at the steady rate first.
+	WarmupMS int `json:"warmup_ms"`
+	// SpikeShop sends SpikeRate jobs per second for SpikeMS after the warm-up,
+	// while the other shops stay at the steady rate.
+	SpikeShop string  `json:"spike_shop"`
+	SpikeRate float64 `json:"spike_rate"`
+	SpikeMS   int     `json:"spike_ms"`
+	// DrainMaxMS bounds the steady tail after the spike, which otherwise lasts
+	// until every job accepted before the spike ended is terminal (D-056).
+	DrainMaxMS int `json:"drain_max_ms"`
 }
 
 // Kind is one job kind and its settings.
@@ -98,6 +157,9 @@ func (c *File) Validate() error {
 	var errs []error
 	bad := func(format string, args ...any) { errs = append(errs, fmt.Errorf(format, args...)) }
 
+	if c.DedupeWindowMS < 1 {
+		bad("dedupe_window_ms must be positive, got %d", c.DedupeWindowMS)
+	}
 	if len(c.Shops) == 0 {
 		bad("no shops")
 	}
@@ -113,12 +175,15 @@ func (c *File) Validate() error {
 		seenShops[s.ID] = true
 		positive(&errs, at, "weight", s.Weight)
 		positive(&errs, at, "max_concurrency", s.MaxConcurrency)
-		if !(s.RatePerSec > 0) || math.IsInf(s.RatePerSec, 0) {
-			bad("%s: rate_per_sec must be a positive number", at)
-		}
+		positiveRate(&errs, at, "rate_per_sec", s.RatePerSec)
 		positive(&errs, at, "rate_burst", s.RateBurst)
 		positive(&errs, at, "backlog_limit", s.BacklogLimit)
 		positive(&errs, at, "backlog_retry_after_ms", s.BacklogRetryAfterMS)
+		positive(&errs, at, "mock_api_capacity", s.MockAPICapacity)
+		positiveRate(&errs, at, "mock_api_leak_per_sec", s.MockAPILeakPerSec)
+		if !(s.WebhooksPerSec >= 0) || math.IsInf(s.WebhooksPerSec, 0) {
+			bad("%s: webhooks_per_sec must be a number of at least 0", at)
+		}
 	}
 
 	if len(c.Kinds) == 0 {
@@ -145,7 +210,75 @@ func (c *File) Validate() error {
 		nonNegative(&errs, at, "max_throttles", k.MaxThrottles)
 		nonNegative(&errs, at, "handler_sleep_ms", k.HandlerSleepMS)
 	}
+
+	m := c.Mockshop
+	if m.RetryHorizonMS < 1 {
+		bad("mockshop: retry_horizon_ms must be positive, got %d", m.RetryHorizonMS)
+	} else if m.RetryHorizonMS >= c.DedupeWindowMS {
+		// D-018: a redelivery after the window would create a second job (Q4).
+		bad("mockshop: retry_horizon_ms (%d) must be shorter than dedupe_window_ms (%d)", m.RetryHorizonMS, c.DedupeWindowMS)
+	}
+	positive(&errs, "mockshop", "retry_base_ms", m.RetryBaseMS)
+	positive(&errs, "mockshop", "retry_cap_ms", m.RetryCapMS)
+	if m.RetryCapMS < m.RetryBaseMS {
+		bad("mockshop: retry_cap_ms (%d) must be at least retry_base_ms (%d)", m.RetryCapMS, m.RetryBaseMS)
+	}
+	positive(&errs, "mockshop", "delivery_timeout_ms", m.DeliveryTimeoutMS)
+	probability(&errs, "mockshop", "duplicate_probability", m.DuplicateProbability)
+	nonNegative(&errs, "mockshop", "duplicate_delay_max_ms", m.DuplicateDelayMaxMS)
+	probability(&errs, "mockshop", "concurrent_duplicate_probability", m.ConcurrentDuplicateProbability)
+
+	if l := c.Loadgen; l != nil {
+		positive(&errs, "loadgen", "tick_ms", l.TickMS)
+		positiveRate(&errs, "loadgen", "rate_per_shop", l.RatePerShop)
+		positive(&errs, "loadgen", "warmup_ms", l.WarmupMS)
+		if !seenShops[l.SpikeShop] {
+			bad("loadgen: spike_shop %q is not one of the shops", l.SpikeShop)
+		}
+		positiveRate(&errs, "loadgen", "spike_rate", l.SpikeRate)
+		positive(&errs, "loadgen", "spike_ms", l.SpikeMS)
+		positive(&errs, "loadgen", "drain_max_ms", l.DrainMaxMS)
+	}
 	return errors.Join(errs...)
+}
+
+// positiveRate checks that v is a positive, finite number.
+func positiveRate(errs *[]error, at, field string, v float64) {
+	if !(v > 0) || math.IsInf(v, 0) {
+		*errs = append(*errs, fmt.Errorf("%s: %s must be a positive number", at, field))
+	}
+}
+
+// probability checks that v is in [0, 1].
+func probability(errs *[]error, at, field string, v float64) {
+	if !(v >= 0 && v <= 1) {
+		*errs = append(*errs, fmt.Errorf("%s: %s must be between 0 and 1, got %v", at, field, v))
+	}
+}
+
+// DedupeWindow returns how long dedupe keys are kept (D-018).
+func (c *File) DedupeWindow() time.Duration {
+	return time.Duration(c.DedupeWindowMS) * time.Millisecond
+}
+
+// Shop returns the shop with the ID.
+func (c *File) Shop(id string) (Shop, bool) {
+	for _, s := range c.Shops {
+		if s.ID == id {
+			return s, true
+		}
+	}
+	return Shop{}, false
+}
+
+// Kind returns the kind's settings.
+func (c *File) Kind(kind string) (Kind, bool) {
+	for _, k := range c.Kinds {
+		if k.Kind == kind {
+			return k, true
+		}
+	}
+	return Kind{}, false
 }
 
 // positive checks that v is in [1, MaxInt32], the range of a Postgres int.

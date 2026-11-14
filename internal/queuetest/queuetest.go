@@ -4,10 +4,13 @@
 package queuetest
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -15,12 +18,16 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/jenishmsoni45/job-queue/internal/config"
+	"github.com/jenishmsoni45/job-queue/internal/dispatcher"
 	"github.com/jenishmsoni45/job-queue/internal/pgtest"
 	"github.com/jenishmsoni45/job-queue/internal/queue"
+	"github.com/jenishmsoni45/job-queue/internal/scheduler"
 	"github.com/jenishmsoni45/job-queue/internal/store"
+	"github.com/jenishmsoni45/job-queue/internal/webhook"
 )
 
 // Shops in tests/testdata/shops.json.
@@ -351,4 +358,110 @@ func (e *Env) WaitState(t testing.TB, id int64, state string, timeout time.Durat
 		return j.State == state
 	})
 	return j
+}
+
+// Fataler is what PostWebhook needs of a test: a *testing.T, or a *rapid.T
+// inside a property.
+type Fataler interface {
+	Helper()
+	Fatal(args ...any)
+}
+
+// WebhookSecret is the HMAC secret test api servers check webhooks with.
+const WebhookSecret = "test-webhook-secret" //nolint:gosec // a dummy test secret, not a credential
+
+// Webhook is one webhook delivery for PostWebhook. Zero fields get defaults:
+// a valid signature over Body, the orders/create topic, and a body for order 1.
+type Webhook struct {
+	Shop, ID string
+	Body     []byte
+	Topic    string
+	// HMAC overrides the signature; "-" sends none.
+	HMAC string
+}
+
+// PostWebhook delivers w to the api server at base and returns the status and
+// the decoded JSON answer (nil if the body is not JSON).
+func PostWebhook(t Fataler, client *http.Client, base string, w Webhook) (int, http.Header, map[string]any) {
+	t.Helper()
+	if w.Body == nil {
+		w.Body = []byte(`{"id": 1}`)
+	}
+	if w.Topic == "" {
+		w.Topic = webhook.TopicOrdersCreate
+	}
+	switch w.HMAC {
+	case "":
+		w.HMAC = webhook.Sign([]byte(WebhookSecret), w.Body)
+	case "-":
+		w.HMAC = ""
+	}
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, base+webhook.Path, bytes.NewReader(w.Body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(webhook.HeaderTopic, w.Topic)
+	req.Header.Set(webhook.HeaderShopDomain, w.Shop)
+	req.Header.Set(webhook.HeaderWebhookID, w.ID)
+	if w.HMAC != "" {
+		req.Header.Set(webhook.HeaderHMAC, w.HMAC)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	raw, _ := io.ReadAll(resp.Body)
+	var out map[string]any
+	_ = json.Unmarshal(raw, &out)
+	return resp.StatusCode, resp.Header, out
+}
+
+// StartDispatcher runs a dispatcher on e that becomes the leader whatever other
+// dispatchers there are: it holds a lock of its own name, which is what a split
+// brain looks like to the claim SQL (design §14). It refreshes every 20 ms, and
+// its reaper and pruner are effectively off. It returns the claim client
+// workers poll; the dispatcher stops when the test ends.
+func (e *Env) StartDispatcher(t testing.TB, name string, mode scheduler.Mode) *dispatcher.Client {
+	t.Helper()
+	d, err := dispatcher.New(dispatcher.Config{
+		DB: e.Pool,
+		Connect: func(ctx context.Context) (*pgx.Conn, error) {
+			c := e.DB.ConnConfig()
+			c.RuntimeParams["application_name"] = "queuetest-" + name
+			return pgx.ConnectConfig(ctx, c)
+		},
+		Scheduler:      mode,
+		Quantum:        int64(e.Config.MaxCost()),
+		LockName:       dispatcher.LeaderLockName + ":" + name,
+		Refresh:        20 * time.Millisecond,
+		LongPoll:       time.Second,
+		ReaperInterval: time.Hour,
+		ReaperBatch:    500,
+		StandbyRetry:   50 * time.Millisecond,
+		PruneInterval:  time.Hour,
+		PruneBatch:     5000,
+		Retention:      Retention,
+		Log:            Logger(t),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_ = d.Run(ctx)
+	}()
+	mux := http.NewServeMux()
+	mux.Handle("POST "+dispatcher.ClaimPath, d)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(func() {
+		cancel()
+		<-done
+		srv.Close()
+	})
+	Eventually(t, 5*time.Second, name+" to lead", d.IsLeader)
+	return &dispatcher.Client{URL: srv.URL, HTTP: srv.Client()}
 }

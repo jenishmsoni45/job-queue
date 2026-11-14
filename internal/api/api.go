@@ -1,8 +1,9 @@
 // Package api is the api role's job endpoints (design §11.1): enqueue one job,
-// or a batch of jobs for one shop, with optional dedupe keys, and read one job.
+// or a batch of jobs for one shop, with optional dedupe keys; read one job; and
+// receive Shopify webhooks, each checked by HMAC and deduped on its webhook ID.
 // An enqueue that would pass the shop's backlog limit is answered with 429 and a
-// Retry-After header, and creates nothing (D-007). Webhooks, the read API and the
-// DLQ arrive in later phases.
+// Retry-After header, and creates nothing (D-007). The read API and the DLQ
+// arrive in phase 6.
 package api
 
 import (
@@ -19,6 +20,7 @@ import (
 
 	"github.com/jenishmsoni45/job-queue/internal/admission"
 	"github.com/jenishmsoni45/job-queue/internal/store"
+	"github.com/jenishmsoni45/job-queue/internal/webhook"
 )
 
 // MaxBodyBytes is the max request body (design §2: 1 MiB).
@@ -36,8 +38,9 @@ const (
 
 // Server serves the job endpoints.
 type Server struct {
-	db  store.DB
-	log *slog.Logger
+	db            store.DB
+	log           *slog.Logger
+	webhookSecret []byte
 }
 
 // New returns a server that reads and writes jobs in db.
@@ -48,6 +51,7 @@ func (s *Server) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/jobs", s.enqueue)
 	mux.HandleFunc("POST /v1/jobs/batch", s.enqueueBatch)
 	mux.HandleFunc("GET /v1/jobs/{id}", s.getJob)
+	mux.HandleFunc("POST "+webhook.Path, s.receiveWebhook)
 }
 
 // jobFields are the fields of one job in a request.

@@ -1,16 +1,27 @@
 {
+  "dedupe_window_ms": 604800000,
   "shops": [
-    {"id": "shop-a.test", "weight": 1, "max_concurrency": 100, "rate_per_sec": 1000, "rate_burst": 1000, "backlog_limit": 100000, "backlog_retry_after_ms": 1000},
-    {"id": "shop-b.test", "weight": 1, "max_concurrency": 100, "rate_per_sec": 1000, "rate_burst": 1000, "backlog_limit": 100000, "backlog_retry_after_ms": 1000},
-    {"id": "shop-c.test", "weight": 1, "max_concurrency": 100, "rate_per_sec": 1000, "rate_burst": 1000, "backlog_limit": 100000, "backlog_retry_after_ms": 1000},
-    {"id": "shop-d.test", "weight": 1, "max_concurrency": 100, "rate_per_sec": 1000, "rate_burst": 1000, "backlog_limit": 100000, "backlog_retry_after_ms": 1000},
-    {"id": "shop-e.test", "weight": 1, "max_concurrency": 100, "rate_per_sec": 1000, "rate_burst": 1000, "backlog_limit": 100000, "backlog_retry_after_ms": 1000}
+    {"id": "shop-a.test", "weight": 1, "max_concurrency": 100, "rate_per_sec": 1000, "rate_burst": 1000, "backlog_limit": 100000, "backlog_retry_after_ms": 1000, "mock_api_capacity": 100000, "mock_api_leak_per_sec": 100000, "webhooks_per_sec": 0},
+    {"id": "shop-b.test", "weight": 1, "max_concurrency": 100, "rate_per_sec": 1000, "rate_burst": 1000, "backlog_limit": 100000, "backlog_retry_after_ms": 1000, "mock_api_capacity": 100000, "mock_api_leak_per_sec": 100000, "webhooks_per_sec": 0},
+    {"id": "shop-c.test", "weight": 1, "max_concurrency": 100, "rate_per_sec": 1000, "rate_burst": 1000, "backlog_limit": 100000, "backlog_retry_after_ms": 1000, "mock_api_capacity": 100000, "mock_api_leak_per_sec": 100000, "webhooks_per_sec": 0},
+    {"id": "shop-d.test", "weight": 1, "max_concurrency": 100, "rate_per_sec": 1000, "rate_burst": 1000, "backlog_limit": 100000, "backlog_retry_after_ms": 1000, "mock_api_capacity": 100000, "mock_api_leak_per_sec": 100000, "webhooks_per_sec": 0},
+    {"id": "shop-e.test", "weight": 1, "max_concurrency": 100, "rate_per_sec": 1000, "rate_burst": 1000, "backlog_limit": 100000, "backlog_retry_after_ms": 1000, "mock_api_capacity": 100000, "mock_api_leak_per_sec": 100000, "webhooks_per_sec": 0}
   ],
   "kinds": [
     {"kind": "test.sleep", "cost": 1, "lease_ms": 1000, "heartbeat_ms": 200, "timeout_ms": 10000, "max_attempts": 5, "max_throttles": 10, "handler_sleep_ms": 0},
     {"kind": "test.fail", "cost": 1, "lease_ms": 1000, "heartbeat_ms": 200, "timeout_ms": 10000, "max_attempts": 5, "max_throttles": 10, "handler_sleep_ms": 0},
     {"kind": "test.panic", "cost": 1, "lease_ms": 1000, "heartbeat_ms": 200, "timeout_ms": 10000, "max_attempts": 5, "max_throttles": 10, "handler_sleep_ms": 0},
     {"kind": "test.hang", "cost": 1, "lease_ms": 1000, "heartbeat_ms": 200, "timeout_ms": 10000, "max_attempts": 5, "max_throttles": 10, "handler_sleep_ms": 0},
-    {"kind": "test.effect", "cost": 1, "lease_ms": 1000, "heartbeat_ms": 200, "timeout_ms": 10000, "max_attempts": 5, "max_throttles": 10, "handler_sleep_ms": 0}
-  ]
+    {"kind": "test.effect", "cost": 1, "lease_ms": 1000, "heartbeat_ms": 200, "timeout_ms": 10000, "max_attempts": 5, "max_throttles": 10, "handler_sleep_ms": 0},
+    {"kind": "order.tag", "cost": 1, "lease_ms": 1000, "heartbeat_ms": 200, "timeout_ms": 10000, "max_attempts": 5, "max_throttles": 10, "handler_sleep_ms": 0}
+  ],
+  "mockshop": {
+    "retry_horizon_ms": 3600000,
+    "retry_base_ms": 1000,
+    "retry_cap_ms": 60000,
+    "delivery_timeout_ms": 5000,
+    "duplicate_probability": 0,
+    "duplicate_delay_max_ms": 0,
+    "concurrent_duplicate_probability": 0
+  }
 }

@@ -2,13 +2,19 @@ package chaos
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/url"
 	"slices"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/jenishmsoni45/job-queue/internal/handlers"
+	"github.com/jenishmsoni45/job-queue/internal/idem"
+	"github.com/jenishmsoni45/job-queue/internal/mockshop"
 	"github.com/jenishmsoni45/job-queue/internal/queuetest"
 )
 
@@ -27,6 +33,7 @@ const (
 	CheckBacklog = "backlog_counter_matches_real_count"
 	CheckEffects = "run_tx_effect_applied_once"
 	CheckRouting = "workers_and_dispatcher_reach_postgres_through_toxiproxy"
+	CheckNFR11   = "nfr11_one_mockshop_mutation_per_completed_job"
 	maxExamples  = 10
 	queuedApps   = "'queued-worker', 'queued-dispatcher', 'queued-dispatcher-leader'"
 )
@@ -54,7 +61,94 @@ func (e *Env) check(ctx context.Context, plan Plan, ids []int64, counts JobCount
 	add(CheckEffects, ef, err)
 	rt, err := e.checkRouting(ctx, samples)
 	add(CheckRouting, rt, err)
+	mu, err := e.checkMutations(ctx)
+	add(CheckNFR11, mu, err)
 	return checks, counts
+}
+
+// checkMutations: mockshop applied exactly one tag mutation for each completed
+// job of the run, and no job of the run has more than one, although workers
+// were killed, paused and cut off mid-call (NFR-11, design §18). mockshop's log
+// spans every run of the stack, but job IDs never repeat, so only this run's
+// jobs are looked up.
+func (e *Env) checkMutations(ctx context.Context) (string, error) {
+	rows, err := e.DB.Query(ctx, `SELECT id, shop_id, state FROM jobs`)
+	if err != nil {
+		return "", err
+	}
+	var jobs []RunJob
+	var j RunJob
+	if _, err := pgx.ForEachRow(rows, []any{&j.ID, &j.Shop, &j.State}, func() error {
+		jobs = append(jobs, j)
+		return nil
+	}); err != nil {
+		return "", err
+	}
+	logs := map[string]map[string]int{}
+	for _, shop := range e.Shops {
+		applied, err := e.mutations(ctx, shop)
+		if err != nil {
+			return "", err
+		}
+		logs[shop] = applied
+	}
+	return MutationErrors(jobs, logs)
+}
+
+// RunJob is one job of a run, as checkMutations sees it.
+type RunJob struct {
+	ID    int64
+	Shop  string
+	State string
+}
+
+// MutationErrors compares a run's jobs with mockshop's mutation logs per shop:
+// every completed job's key "job-<id>-tag" was applied once, and no job's key
+// more than once.
+func MutationErrors(jobs []RunJob, logs map[string]map[string]int) (string, error) {
+	var errs []error
+	completed, applied := 0, 0
+	for _, j := range jobs {
+		n := logs[j.Shop][idem.Key(j.ID, handlers.TagStep)]
+		applied += n
+		switch {
+		case n > 1:
+			errs = append(errs, fmt.Errorf("job %d (%s) has %d applied mutations", j.ID, j.State, n))
+		case j.State == "completed" && n != 1:
+			errs = append(errs, fmt.Errorf("completed job %d has %d applied mutations", j.ID, n))
+		}
+		if j.State == "completed" {
+			completed++
+		}
+	}
+	if completed == 0 {
+		errs = append(errs, errors.New("no job completed, so the check would pass vacuously"))
+	}
+	if len(errs) > maxExamples {
+		errs = append(errs[:maxExamples], fmt.Errorf("and %d more", len(errs)-maxExamples))
+	}
+	return fmt.Sprintf("%d completed jobs, %d mutations applied for the run's jobs", completed, applied), errors.Join(errs...)
+}
+
+// mutations reads mockshop's applied count per Idempotency-Key for one shop.
+func (e *Env) mutations(ctx context.Context, shop string) (map[string]int, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, e.Mockshop+mockshop.MutationsPath+"?shop="+url.QueryEscape(shop), nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := e.HTTP.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("chaos: read mockshop's mutation log: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("chaos: mockshop's mutation log for %s: status %d", shop, resp.StatusCode)
+	}
+	var m mockshop.Mutations
+	if err := json.NewDecoder(resp.Body).Decode(&m); err != nil {
+		return nil, fmt.Errorf("chaos: decode mockshop's mutation log: %w", err)
+	}
+	return m.Applied, nil
 }
 
 // checkQ1: every planned key was accepted, and every accepted job is completed

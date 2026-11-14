@@ -7,7 +7,9 @@
 // Postgres cleanly or by SIGKILL, and add Toxiproxy latency, timeouts or
 // connection resets on a process's link to Postgres. It then waits until every
 // accepted job is completed or dead, and checks Q1, Q3, Q4, the backlog
-// counter and that each completed job's run.Tx() effect was applied once.
+// counter, that each completed job's run.Tx() effect was applied once, and, from
+// phase 5, that mockshop applied each completed job's tag mutation once (NFR-11):
+// every job tags an order through mockshop's Admin API before its effect.
 //
 // The harness runs in the chaos container, the only service that mounts the
 // Docker socket, and only under the chaos profile of the separate jobqueue-chaos

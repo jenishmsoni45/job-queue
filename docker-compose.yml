@@ -39,6 +39,10 @@ x-app-healthcheck: &app-healthcheck
 services:
   postgres:
     image: postgres:16.15-trixie@sha256:f9a7b9ebf6f56201f949db745e47bc423c0f0f8294bafe991cc10bf74b029657
+    # More than the default 100 connections: `make test` runs its packages in parallel, each
+    # test database with its own pool, and the webhook and Q4 tests are deliberately concurrent.
+    # Durability settings stay at their defaults (design §13).
+    command: ["postgres", "-c", "max_connections=300"]
     environment:
       POSTGRES_USER: queue
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env (copy .env.example)}
@@ -90,6 +94,10 @@ services:
   api:
     <<: *app
     command: ["api"]
+    environment:
+      <<: *pg-client-env
+      # The dummy HMAC secret the webhook receiver checks with (design §15).
+      SHOPIFY_WEBHOOK_SECRET: ${SHOPIFY_WEBHOOK_SECRET:?set SHOPIFY_WEBHOOK_SECRET in .env (copy .env.example)}
     volumes: *queued-config
     ports:
       - "127.0.0.1:8080:8080"
@@ -130,12 +138,19 @@ services:
       migrate:
         condition: service_completed_successfully
 
+  # The local Shopify simulation (design §12): it reads the same config file as
+  # queued for each shop's Admin API bucket and webhook rate (D-050), and signs
+  # webhooks with the same dummy secret the api checks.
   mockshop:
     <<: *app
     entrypoint: ["/mockshop"]
     # Replaces the Postgres client settings: mockshop never talks to the database.
     environment:
       MOCKSHOP_HTTP_ADDR: ":8090"
+      MOCKSHOP_CONFIG: /etc/queued/shops.json
+      MOCKSHOP_WEBHOOK_URL: http://api:8080/webhooks/shopify
+      SHOPIFY_WEBHOOK_SECRET: ${SHOPIFY_WEBHOOK_SECRET:?set SHOPIFY_WEBHOOK_SECRET in .env (copy .env.example)}
+    volumes: *queued-config
     ports:
       - "127.0.0.1:8090:8090"
     healthcheck:
@@ -177,12 +192,44 @@ services:
     environment:
       <<: *pg-client-env
       CHAOS_API_URL: http://api:8080
+      CHAOS_MOCKSHOP_URL: http://mockshop:8090
       CHAOS_TOXIPROXY_URL: http://toxiproxy:8474
       CHAOS_DOCKER_SOCKET: /var/run/docker.sock
       CHAOS_CONFIG: /src/tests/chaos/shops.json
     volumes:
       - .:/src
       - /var/run/docker.sock:/var/run/docker.sock
+
+  # The Black Friday load (design §17): loadgen sends bench/blackfriday.json's seeded arrivals
+  # to the api and prints its report on stdout. scripts/bench.sh runs it, and the bench runner
+  # below, in the separate jobqueue-bench project with docker-compose.bench.yml (D-053). Both
+  # are command runners with no healthcheck (D-033).
+  loadgen:
+    <<: *app
+    entrypoint: ["/loadgen"]
+    profiles: [bench]
+    environment:
+      LOADGEN_API_URL: http://api:8080
+      LOADGEN_CONFIG: /etc/queued/shops.json
+    volumes:
+      - ./bench/blackfriday.json:/etc/queued/shops.json:ro
+
+  # The bench runner: it waits for every accepted job to finish, exports the run from
+  # Postgres and mockshop, and writes the report. It runs the binary make builds in the
+  # tools container, with the same image, and never gets the Docker socket.
+  bench:
+    build:
+      context: tools
+      dockerfile: Dockerfile
+    image: jobqueue-tools:local
+    profiles: [bench]
+    working_dir: /src
+    environment:
+      <<: *pg-client-env
+      BENCH_MOCKSHOP_URL: http://mockshop:8090
+      BENCH_CONFIG: /src/bench/blackfriday.json
+    volumes:
+      - .:/src
 
 volumes:
   pgdata:

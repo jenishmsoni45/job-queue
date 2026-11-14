@@ -1,0 +1,88 @@
+{
+  "seed": 985761041,
+  "started": "2026-11-14T21:15:54.892637751Z",
+  "duration_ms": 29413,
+  "passed": true,
+  "jobs": {
+    "planned": 2000,
+    "accepted": 2000,
+    "enqueue_retries": 0,
+    "duplicates": 0,
+    "completed": 2000,
+    "dead": 0,
+    "not_terminal": 0
+  },
+  "faults": [
+    {
+      "kind": "reset_peer",
+      "target": "pg-worker-1",
+      "at_ms": 13869,
+      "duration_ms": 1058,
+      "stream": "upstream",
+      "attributes": {
+        "timeout": 424
+      },
+      "applied_ms": 13869,
+      "reverted_ms": 15312
+    },
+    {
+      "kind": "kill_worker",
+      "target": "worker-1",
+      "at_ms": 23113,
+      "duration_ms": 1770,
+      "applied_ms": 23116,
+      "reverted_ms": 25064
+    },
+    {
+      "kind": "kill_worker",
+      "target": "worker-1",
+      "at_ms": 28336,
+      "duration_ms": 904,
+      "applied_ms": 28337,
+      "reverted_ms": 29389
+    }
+  ],
+  "samples": {
+    "taken": 29,
+    "skipped": 0,
+    "backlog_mismatched": 0,
+    "connections_seen": 318
+  },
+  "checks": [
+    {
+      "name": "q1_every_accepted_job_completed_or_dead",
+      "passed": true,
+      "detail": "2000 accepted: 2000 completed, 0 dead"
+    },
+    {
+      "name": "q4_one_job_per_dedupe_key",
+      "passed": true,
+      "detail": "2000 keys, 2000 jobs"
+    },
+    {
+      "name": "q3_no_overlapping_leases",
+      "passed": true,
+      "detail": "2012 leases checked"
+    },
+    {
+      "name": "backlog_counter_matches_real_count",
+      "passed": true,
+      "detail": "29 samples during the run and one at the end matched"
+    },
+    {
+      "name": "run_tx_effect_applied_once",
+      "passed": true,
+      "detail": "2000 effects"
+    },
+    {
+      "name": "workers_and_dispatcher_reach_postgres_through_toxiproxy",
+      "passed": true,
+      "detail": "325 connections seen across the run's samples, all through toxiproxy"
+    },
+    {
+      "name": "nfr11_one_mockshop_mutation_per_completed_job",
+      "passed": true,
+      "detail": "2000 completed jobs, 2000 mutations applied for the run's jobs"
+    }
+  ]
+}

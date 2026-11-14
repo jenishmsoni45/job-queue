@@ -1,9 +1,13 @@
 package store_test
 
 import (
+	"encoding/json"
 	"fmt"
+	"slices"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/jenishmsoni45/job-queue/internal/config"
 	"github.com/jenishmsoni45/job-queue/internal/queuetest"
@@ -234,4 +238,102 @@ func TestClaimEndFull(t *testing.T) {
 	if out := claimFor(t, env, 0, store.ClaimSpec{}); len(out.Jobs) != 0 {
 		t.Fatalf("claimed %d with no owners", len(out.Jobs))
 	}
+}
+
+// The claim and the snapshot must be answered from jobs_queued_shop even when the
+// planner's statistics are stale, which they are just after a flood (D-059). The table
+// is analysed while it holds only finished jobs, then a flooding shop queues 45,000 jobs
+// and a quiet shop one, with no ANALYZE after. With sorts allowed the planner believes
+// the quiet shop has about one queued job and picks jobs_queued_fifo plus a top-N Sort,
+// which reads the whole flood (9,157 buffers in the snapshot, against 41).
+func TestClaimAndSnapshotQueriesUseTheShopIndexWithStaleStatistics(t *testing.T) {
+	t.Parallel()
+	env := queuetest.New(t, nil)
+	ctx := t.Context()
+	exec := func(q string, args ...any) {
+		t.Helper()
+		if _, err := env.Pool.Exec(ctx, q, args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	exec(`INSERT INTO jobs (shop_id, kind, cost, payload, state, run_at, first_runnable_at, completed_at, claim_seq)
+	      SELECT s, $2, 1, '{}', 'completed', now() - interval '1 day', now() - interval '1 day', now() - interval '1 day', 1
+	        FROM unnest($1::text[]) s, generate_series(1, 2400)`, []string{shopA, shopB}, testkinds.Sleep)
+	exec(`ANALYZE jobs`)
+	exec(`INSERT INTO jobs (shop_id, kind, cost, payload, state, run_at, first_runnable_at)
+	      SELECT $1, $2, 1, '{}', 'queued', now() - interval '30 seconds' + g * interval '1 millisecond',
+	             now() - interval '30 seconds' + g * interval '1 millisecond'
+	        FROM generate_series(1, 45000) g`, shopA, testkinds.Sleep)
+	exec(`INSERT INTO jobs (shop_id, kind, cost, payload, state, run_at, first_runnable_at)
+	      VALUES ($1, $2, 1, '{}', 'queued', now() - interval '1 second', now() - interval '1 second')`, shopB, testkinds.Sleep)
+
+	// The claim for the quiet shop, which DRR sends for the shop whose turn it is, still works.
+	out := claimFor(t, env, 1, store.ClaimSpec{Shops: []string{shopB}})
+	if len(out.Jobs) != 1 || out.Jobs[0].Shop != shopB {
+		t.Fatalf("claimed %+v, want shop B's one job", out.Jobs)
+	}
+	env.Enqueue(t, shopB, testkinds.Sleep, nil) // so the plan below has a row to find
+
+	cand := scans(t, env, store.CandidatesSQL(1), 1, shopB)
+	if !slices.Contains(cand, "jobs_queued_shop") || slices.Contains(cand, "jobs_queued_fifo") || slices.Contains(cand, "Sort") {
+		t.Errorf("the single-shop claim statement is planned on %v, want jobs_queued_shop alone", cand)
+	}
+	// The UPDATE that starts the locked candidates is found by primary key. Joined to
+	// unnest it was a nested loop over every queued row (D-060).
+	var ids []int64
+	rows, err := env.Pool.Query(ctx, `SELECT id FROM jobs WHERE state = 'queued' AND shop_id = $1 ORDER BY run_at LIMIT 3`, shopA)
+	if err == nil {
+		ids, err = pgx.CollectRows(rows, pgx.RowTo[int64])
+	}
+	if err != nil || len(ids) != 3 {
+		t.Fatalf("picking ids: %v, %v", ids, err)
+	}
+	upd := scans(t, env, store.ClaimRowsSQL, ids, []string{"w1", "w2", "w3"})
+	if !slices.Contains(upd, "jobs_pkey") || slices.Contains(upd, "Seq Scan on jobs") || slices.Contains(upd, "jobs_queued_fifo") {
+		t.Errorf("the claim's UPDATE is planned on %v, want jobs_pkey and no scan of the queue", upd)
+	}
+	snap := scans(t, env, store.SnapshotShopsSQL)
+	if !slices.Contains(snap, "jobs_queued_shop") || slices.Contains(snap, "jobs_queued_fifo") || slices.Contains(snap, "Sort") {
+		t.Errorf("the snapshot statement is planned on %v, want jobs_queued_shop alone", snap)
+	}
+}
+
+// scans EXPLAINs a statement and lists its scans: the index name of an index scan,
+// and "Seq Scan on <table>" for a sequential one.
+func scans(t *testing.T, env *queuetest.Env, query string, args ...any) []string {
+	t.Helper()
+	var js string
+	err := pgx.BeginFunc(t.Context(), env.Pool, func(tx pgx.Tx) error {
+		// What store does before these statements: noPlannerSort.
+		if _, err := tx.Exec(t.Context(), `SET LOCAL enable_sort = off`); err != nil {
+			return err
+		}
+		return tx.QueryRow(t.Context(), `EXPLAIN (FORMAT JSON) `+query, args...).Scan(&js)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var top []struct{ Plan map[string]any }
+	if err := json.Unmarshal([]byte(js), &top); err != nil || len(top) != 1 {
+		t.Fatalf("plan %s: %v", js, err)
+	}
+	var found []string
+	var walk func(node map[string]any)
+	walk = func(node map[string]any) {
+		switch typ, _ := node["Node Type"].(string); typ {
+		case "Seq Scan":
+			found = append(found, fmt.Sprintf("Seq Scan on %v", node["Relation Name"]))
+		case "Sort", "Incremental Sort":
+			found = append(found, "Sort")
+		case "Index Scan", "Index Only Scan", "Bitmap Index Scan":
+			found = append(found, fmt.Sprint(node["Index Name"]))
+		}
+		if kids, ok := node["Plans"].([]any); ok {
+			for _, k := range kids {
+				walk(k.(map[string]any))
+			}
+		}
+	}
+	walk(top[0].Plan)
+	return found
 }
