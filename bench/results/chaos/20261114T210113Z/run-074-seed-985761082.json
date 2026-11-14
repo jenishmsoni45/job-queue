@@ -1,0 +1,114 @@
+{
+  "seed": 985761082,
+  "started": "2026-11-14T21:35:31.645647545Z",
+  "duration_ms": 27008,
+  "passed": true,
+  "jobs": {
+    "planned": 2000,
+    "accepted": 2000,
+    "enqueue_retries": 0,
+    "duplicates": 0,
+    "completed": 2000,
+    "dead": 0,
+    "not_terminal": 0
+  },
+  "faults": [
+    {
+      "kind": "latency",
+      "target": "pg-dispatcher",
+      "at_ms": 14425,
+      "duration_ms": 2365,
+      "stream": "upstream",
+      "attributes": {
+        "jitter": 177,
+        "latency": 941
+      },
+      "applied_ms": 14425,
+      "reverted_ms": 16793
+    },
+    {
+      "kind": "timeout",
+      "target": "pg-worker-1",
+      "at_ms": 15325,
+      "duration_ms": 1163,
+      "stream": "upstream",
+      "attributes": {
+        "timeout": 610
+      },
+      "applied_ms": 15329,
+      "reverted_ms": 16498
+    },
+    {
+      "kind": "pause_worker",
+      "target": "worker-1",
+      "at_ms": 22364,
+      "duration_ms": 4553,
+      "applied_ms": 22365,
+      "reverted_ms": 26980
+    },
+    {
+      "kind": "timeout",
+      "target": "pg-dispatcher",
+      "at_ms": 23002,
+      "duration_ms": 1085,
+      "stream": "downstream",
+      "attributes": {
+        "timeout": 1752
+      },
+      "applied_ms": 23006,
+      "reverted_ms": 24095
+    },
+    {
+      "kind": "restart_postgres",
+      "target": "postgres",
+      "at_ms": 25294,
+      "duration_ms": 217,
+      "hard": true,
+      "applied_ms": 25294,
+      "reverted_ms": 25702
+    }
+  ],
+  "samples": {
+    "taken": 26,
+    "skipped": 0,
+    "backlog_mismatched": 0,
+    "connections_seen": 374
+  },
+  "checks": [
+    {
+      "name": "q1_every_accepted_job_completed_or_dead",
+      "passed": true,
+      "detail": "2000 accepted: 2000 completed, 0 dead"
+    },
+    {
+      "name": "q4_one_job_per_dedupe_key",
+      "passed": true,
+      "detail": "2000 keys, 2000 jobs"
+    },
+    {
+      "name": "q3_no_overlapping_leases",
+      "passed": true,
+      "detail": "2000 leases checked"
+    },
+    {
+      "name": "backlog_counter_matches_real_count",
+      "passed": true,
+      "detail": "26 samples during the run and one at the end matched"
+    },
+    {
+      "name": "run_tx_effect_applied_once",
+      "passed": true,
+      "detail": "2000 effects"
+    },
+    {
+      "name": "workers_and_dispatcher_reach_postgres_through_toxiproxy",
+      "passed": true,
+      "detail": "376 connections seen across the run's samples, all through toxiproxy"
+    },
+    {
+      "name": "nfr11_one_mockshop_mutation_per_completed_job",
+      "passed": true,
+      "detail": "2000 completed jobs, 2000 mutations applied for the run's jobs"
+    }
+  ]
+}

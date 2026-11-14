@@ -1,0 +1,928 @@
+{
+  "started": "2026-11-14T21:01:13.522845885Z",
+  "finished": "2026-11-14T21:48:21.86725618Z",
+  "base_seed": 985761009,
+  "settings": {
+    "lease_ms": 2000,
+    "heartbeat_ms": 500,
+    "fault_window_ms": 30000,
+    "run_timeout_ms": 120000,
+    "jobs_per_run": 2000,
+    "shops": 5,
+    "max_job_sleep_ms": 250
+  },
+  "runs": [
+    {
+      "seed": 985761009,
+      "passed": true,
+      "duration_ms": 23281,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 3,
+      "file": "run-001-seed-985761009.json"
+    },
+    {
+      "seed": 985761010,
+      "passed": true,
+      "duration_ms": 32917,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 6,
+      "file": "run-002-seed-985761010.json"
+    },
+    {
+      "seed": 985761011,
+      "passed": true,
+      "duration_ms": 27203,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 5,
+      "file": "run-003-seed-985761011.json"
+    },
+    {
+      "seed": 985761012,
+      "passed": true,
+      "duration_ms": 27947,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 4,
+      "file": "run-004-seed-985761012.json"
+    },
+    {
+      "seed": 985761013,
+      "passed": true,
+      "duration_ms": 22128,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 4,
+      "file": "run-005-seed-985761013.json"
+    },
+    {
+      "seed": 985761014,
+      "passed": true,
+      "duration_ms": 26507,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 3,
+      "file": "run-006-seed-985761014.json"
+    },
+    {
+      "seed": 985761015,
+      "passed": true,
+      "duration_ms": 23608,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 5,
+      "file": "run-007-seed-985761015.json"
+    },
+    {
+      "seed": 985761016,
+      "passed": true,
+      "duration_ms": 29103,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 4,
+      "file": "run-008-seed-985761016.json"
+    },
+    {
+      "seed": 985761017,
+      "passed": true,
+      "duration_ms": 27859,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 7,
+      "file": "run-009-seed-985761017.json"
+    },
+    {
+      "seed": 985761018,
+      "passed": true,
+      "duration_ms": 27564,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 5,
+      "file": "run-010-seed-985761018.json"
+    },
+    {
+      "seed": 985761019,
+      "passed": true,
+      "duration_ms": 24891,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 3,
+      "file": "run-011-seed-985761019.json"
+    },
+    {
+      "seed": 985761020,
+      "passed": true,
+      "duration_ms": 25203,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 3,
+      "file": "run-012-seed-985761020.json"
+    },
+    {
+      "seed": 985761021,
+      "passed": true,
+      "duration_ms": 24285,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 5,
+      "file": "run-013-seed-985761021.json"
+    },
+    {
+      "seed": 985761022,
+      "passed": true,
+      "duration_ms": 25753,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 4,
+      "file": "run-014-seed-985761022.json"
+    },
+    {
+      "seed": 985761023,
+      "passed": true,
+      "duration_ms": 30412,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 7,
+      "file": "run-015-seed-985761023.json"
+    },
+    {
+      "seed": 985761024,
+      "passed": true,
+      "duration_ms": 24380,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 7,
+      "file": "run-016-seed-985761024.json"
+    },
+    {
+      "seed": 985761025,
+      "passed": true,
+      "duration_ms": 31410,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 7,
+      "file": "run-017-seed-985761025.json"
+    },
+    {
+      "seed": 985761026,
+      "passed": true,
+      "duration_ms": 25216,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 4,
+      "file": "run-018-seed-985761026.json"
+    },
+    {
+      "seed": 985761027,
+      "passed": true,
+      "duration_ms": 28577,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 7,
+      "file": "run-019-seed-985761027.json"
+    },
+    {
+      "seed": 985761028,
+      "passed": true,
+      "duration_ms": 26306,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 4,
+      "file": "run-020-seed-985761028.json"
+    },
+    {
+      "seed": 985761029,
+      "passed": true,
+      "duration_ms": 31662,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 8,
+      "file": "run-021-seed-985761029.json"
+    },
+    {
+      "seed": 985761030,
+      "passed": true,
+      "duration_ms": 30885,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 8,
+      "file": "run-022-seed-985761030.json"
+    },
+    {
+      "seed": 985761031,
+      "passed": true,
+      "duration_ms": 27140,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 6,
+      "file": "run-023-seed-985761031.json"
+    },
+    {
+      "seed": 985761032,
+      "passed": true,
+      "duration_ms": 29542,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 5,
+      "file": "run-024-seed-985761032.json"
+    },
+    {
+      "seed": 985761033,
+      "passed": true,
+      "duration_ms": 26848,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 6,
+      "file": "run-025-seed-985761033.json"
+    },
+    {
+      "seed": 985761034,
+      "passed": true,
+      "duration_ms": 28582,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 4,
+      "file": "run-026-seed-985761034.json"
+    },
+    {
+      "seed": 985761035,
+      "passed": true,
+      "duration_ms": 27411,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 7,
+      "file": "run-027-seed-985761035.json"
+    },
+    {
+      "seed": 985761036,
+      "passed": true,
+      "duration_ms": 31325,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 7,
+      "file": "run-028-seed-985761036.json"
+    },
+    {
+      "seed": 985761037,
+      "passed": true,
+      "duration_ms": 25119,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 5,
+      "file": "run-029-seed-985761037.json"
+    },
+    {
+      "seed": 985761038,
+      "passed": true,
+      "duration_ms": 26166,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 3,
+      "file": "run-030-seed-985761038.json"
+    },
+    {
+      "seed": 985761039,
+      "passed": true,
+      "duration_ms": 28951,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 7,
+      "file": "run-031-seed-985761039.json"
+    },
+    {
+      "seed": 985761040,
+      "passed": true,
+      "duration_ms": 25447,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 6,
+      "file": "run-032-seed-985761040.json"
+    },
+    {
+      "seed": 985761041,
+      "passed": true,
+      "duration_ms": 29413,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 3,
+      "file": "run-033-seed-985761041.json"
+    },
+    {
+      "seed": 985761042,
+      "passed": true,
+      "duration_ms": 32233,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 8,
+      "file": "run-034-seed-985761042.json"
+    },
+    {
+      "seed": 985761043,
+      "passed": true,
+      "duration_ms": 29293,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 3,
+      "file": "run-035-seed-985761043.json"
+    },
+    {
+      "seed": 985761044,
+      "passed": true,
+      "duration_ms": 26520,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 3,
+      "file": "run-036-seed-985761044.json"
+    },
+    {
+      "seed": 985761045,
+      "passed": true,
+      "duration_ms": 31192,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 6,
+      "file": "run-037-seed-985761045.json"
+    },
+    {
+      "seed": 985761046,
+      "passed": true,
+      "duration_ms": 29860,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 7,
+      "file": "run-038-seed-985761046.json"
+    },
+    {
+      "seed": 985761047,
+      "passed": true,
+      "duration_ms": 28382,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 6,
+      "file": "run-039-seed-985761047.json"
+    },
+    {
+      "seed": 985761048,
+      "passed": true,
+      "duration_ms": 26086,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 5,
+      "file": "run-040-seed-985761048.json"
+    },
+    {
+      "seed": 985761049,
+      "passed": true,
+      "duration_ms": 26147,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 6,
+      "file": "run-041-seed-985761049.json"
+    },
+    {
+      "seed": 985761050,
+      "passed": true,
+      "duration_ms": 29716,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 6,
+      "file": "run-042-seed-985761050.json"
+    },
+    {
+      "seed": 985761051,
+      "passed": true,
+      "duration_ms": 31656,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 7,
+      "file": "run-043-seed-985761051.json"
+    },
+    {
+      "seed": 985761052,
+      "passed": true,
+      "duration_ms": 29009,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 7,
+      "file": "run-044-seed-985761052.json"
+    },
+    {
+      "seed": 985761053,
+      "passed": true,
+      "duration_ms": 26207,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 8,
+      "file": "run-045-seed-985761053.json"
+    },
+    {
+      "seed": 985761054,
+      "passed": true,
+      "duration_ms": 26751,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 4,
+      "file": "run-046-seed-985761054.json"
+    },
+    {
+      "seed": 985761055,
+      "passed": true,
+      "duration_ms": 30766,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 6,
+      "file": "run-047-seed-985761055.json"
+    },
+    {
+      "seed": 985761056,
+      "passed": true,
+      "duration_ms": 26512,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 5,
+      "file": "run-048-seed-985761056.json"
+    },
+    {
+      "seed": 985761057,
+      "passed": true,
+      "duration_ms": 22955,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 3,
+      "file": "run-049-seed-985761057.json"
+    },
+    {
+      "seed": 985761058,
+      "passed": true,
+      "duration_ms": 28104,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 6,
+      "file": "run-050-seed-985761058.json"
+    },
+    {
+      "seed": 985761059,
+      "passed": true,
+      "duration_ms": 30066,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 3,
+      "file": "run-051-seed-985761059.json"
+    },
+    {
+      "seed": 985761060,
+      "passed": true,
+      "duration_ms": 26235,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 5,
+      "file": "run-052-seed-985761060.json"
+    },
+    {
+      "seed": 985761061,
+      "passed": true,
+      "duration_ms": 35589,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 7,
+      "file": "run-053-seed-985761061.json"
+    },
+    {
+      "seed": 985761062,
+      "passed": true,
+      "duration_ms": 32660,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 7,
+      "file": "run-054-seed-985761062.json"
+    },
+    {
+      "seed": 985761063,
+      "passed": true,
+      "duration_ms": 24550,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 3,
+      "file": "run-055-seed-985761063.json"
+    },
+    {
+      "seed": 985761064,
+      "passed": true,
+      "duration_ms": 28966,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 8,
+      "file": "run-056-seed-985761064.json"
+    },
+    {
+      "seed": 985761065,
+      "passed": true,
+      "duration_ms": 25918,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 7,
+      "file": "run-057-seed-985761065.json"
+    },
+    {
+      "seed": 985761066,
+      "passed": true,
+      "duration_ms": 28712,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 5,
+      "file": "run-058-seed-985761066.json"
+    },
+    {
+      "seed": 985761067,
+      "passed": true,
+      "duration_ms": 29272,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 7,
+      "file": "run-059-seed-985761067.json"
+    },
+    {
+      "seed": 985761068,
+      "passed": true,
+      "duration_ms": 25651,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 3,
+      "file": "run-060-seed-985761068.json"
+    },
+    {
+      "seed": 985761069,
+      "passed": true,
+      "duration_ms": 25900,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 4,
+      "file": "run-061-seed-985761069.json"
+    },
+    {
+      "seed": 985761070,
+      "passed": true,
+      "duration_ms": 27563,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 4,
+      "file": "run-062-seed-985761070.json"
+    },
+    {
+      "seed": 985761071,
+      "passed": true,
+      "duration_ms": 31499,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 7,
+      "file": "run-063-seed-985761071.json"
+    },
+    {
+      "seed": 985761072,
+      "passed": true,
+      "duration_ms": 27537,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 4,
+      "file": "run-064-seed-985761072.json"
+    },
+    {
+      "seed": 985761073,
+      "passed": true,
+      "duration_ms": 30226,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 8,
+      "file": "run-065-seed-985761073.json"
+    },
+    {
+      "seed": 985761074,
+      "passed": true,
+      "duration_ms": 29820,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 7,
+      "file": "run-066-seed-985761074.json"
+    },
+    {
+      "seed": 985761075,
+      "passed": true,
+      "duration_ms": 25556,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 4,
+      "file": "run-067-seed-985761075.json"
+    },
+    {
+      "seed": 985761076,
+      "passed": true,
+      "duration_ms": 28678,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 4,
+      "file": "run-068-seed-985761076.json"
+    },
+    {
+      "seed": 985761077,
+      "passed": true,
+      "duration_ms": 28070,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 6,
+      "file": "run-069-seed-985761077.json"
+    },
+    {
+      "seed": 985761078,
+      "passed": true,
+      "duration_ms": 24085,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 3,
+      "file": "run-070-seed-985761078.json"
+    },
+    {
+      "seed": 985761079,
+      "passed": true,
+      "duration_ms": 26165,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 4,
+      "file": "run-071-seed-985761079.json"
+    },
+    {
+      "seed": 985761080,
+      "passed": true,
+      "duration_ms": 30360,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 4,
+      "file": "run-072-seed-985761080.json"
+    },
+    {
+      "seed": 985761081,
+      "passed": true,
+      "duration_ms": 24700,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 5,
+      "file": "run-073-seed-985761081.json"
+    },
+    {
+      "seed": 985761082,
+      "passed": true,
+      "duration_ms": 27008,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 5,
+      "file": "run-074-seed-985761082.json"
+    },
+    {
+      "seed": 985761083,
+      "passed": true,
+      "duration_ms": 27143,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 5,
+      "file": "run-075-seed-985761083.json"
+    },
+    {
+      "seed": 985761084,
+      "passed": true,
+      "duration_ms": 26733,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 7,
+      "file": "run-076-seed-985761084.json"
+    },
+    {
+      "seed": 985761085,
+      "passed": true,
+      "duration_ms": 28951,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 5,
+      "file": "run-077-seed-985761085.json"
+    },
+    {
+      "seed": 985761086,
+      "passed": true,
+      "duration_ms": 27146,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 5,
+      "file": "run-078-seed-985761086.json"
+    },
+    {
+      "seed": 985761087,
+      "passed": true,
+      "duration_ms": 27122,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 5,
+      "file": "run-079-seed-985761087.json"
+    },
+    {
+      "seed": 985761088,
+      "passed": true,
+      "duration_ms": 21674,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 3,
+      "file": "run-080-seed-985761088.json"
+    },
+    {
+      "seed": 985761089,
+      "passed": true,
+      "duration_ms": 25911,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 6,
+      "file": "run-081-seed-985761089.json"
+    },
+    {
+      "seed": 985761090,
+      "passed": true,
+      "duration_ms": 28412,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 7,
+      "file": "run-082-seed-985761090.json"
+    },
+    {
+      "seed": 985761091,
+      "passed": true,
+      "duration_ms": 24462,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 5,
+      "file": "run-083-seed-985761091.json"
+    },
+    {
+      "seed": 985761092,
+      "passed": true,
+      "duration_ms": 25690,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 7,
+      "file": "run-084-seed-985761092.json"
+    },
+    {
+      "seed": 985761093,
+      "passed": true,
+      "duration_ms": 23839,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 6,
+      "file": "run-085-seed-985761093.json"
+    },
+    {
+      "seed": 985761094,
+      "passed": true,
+      "duration_ms": 30071,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 8,
+      "file": "run-086-seed-985761094.json"
+    },
+    {
+      "seed": 985761095,
+      "passed": true,
+      "duration_ms": 33826,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 8,
+      "file": "run-087-seed-985761095.json"
+    },
+    {
+      "seed": 985761096,
+      "passed": true,
+      "duration_ms": 24350,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 3,
+      "file": "run-088-seed-985761096.json"
+    },
+    {
+      "seed": 985761097,
+      "passed": true,
+      "duration_ms": 27569,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 8,
+      "file": "run-089-seed-985761097.json"
+    },
+    {
+      "seed": 985761098,
+      "passed": true,
+      "duration_ms": 32992,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 8,
+      "file": "run-090-seed-985761098.json"
+    },
+    {
+      "seed": 985761099,
+      "passed": true,
+      "duration_ms": 27191,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 4,
+      "file": "run-091-seed-985761099.json"
+    },
+    {
+      "seed": 985761100,
+      "passed": true,
+      "duration_ms": 33006,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 8,
+      "file": "run-092-seed-985761100.json"
+    },
+    {
+      "seed": 985761101,
+      "passed": true,
+      "duration_ms": 27176,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 8,
+      "file": "run-093-seed-985761101.json"
+    },
+    {
+      "seed": 985761102,
+      "passed": true,
+      "duration_ms": 30915,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 6,
+      "file": "run-094-seed-985761102.json"
+    },
+    {
+      "seed": 985761103,
+      "passed": true,
+      "duration_ms": 20388,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 3,
+      "file": "run-095-seed-985761103.json"
+    },
+    {
+      "seed": 985761104,
+      "passed": true,
+      "duration_ms": 20027,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 3,
+      "file": "run-096-seed-985761104.json"
+    },
+    {
+      "seed": 985761105,
+      "passed": true,
+      "duration_ms": 21972,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 4,
+      "file": "run-097-seed-985761105.json"
+    },
+    {
+      "seed": 985761106,
+      "passed": true,
+      "duration_ms": 21936,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 4,
+      "file": "run-098-seed-985761106.json"
+    },
+    {
+      "seed": 985761107,
+      "passed": true,
+      "duration_ms": 25089,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 4,
+      "file": "run-099-seed-985761107.json"
+    },
+    {
+      "seed": 985761108,
+      "passed": true,
+      "duration_ms": 29495,
+      "completed": 2000,
+      "dead": 0,
+      "faults": 5,
+      "file": "run-100-seed-985761108.json"
+    }
+  ],
+  "passed": 100,
+  "failed": 0,
+  "recovery": {
+    "started": "2026-11-14T21:47:49.649926637Z",
+    "lease_ms": 30000,
+    "reaper_scan_ms": 5000,
+    "target_ms": 35000,
+    "killed": "worker-1",
+    "orphans": 6,
+    "recovery_ms": 31965,
+    "passed": true
+  }
+}

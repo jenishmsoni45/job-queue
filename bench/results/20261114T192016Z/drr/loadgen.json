@@ -1,0 +1,173 @@
+{
+  "seed": 20261221,
+  "tick_ms": 100,
+  "started_at": "2026-11-14T19:31:24.106110129Z",
+  "ended_at": "2026-11-14T19:41:05.238904967Z",
+  "ticks": {
+    "spike": 3000,
+    "tail": 1612,
+    "warmup": 1200
+  },
+  "drained": true,
+  "drain_timed_out": false,
+  "interrupted": false,
+  "late_ticks": 0,
+  "shops": {
+    "shop-01.mockshop.test": {
+      "offered": 607959,
+      "offered_by_phase": {
+        "spike": 602372,
+        "tail": 3150,
+        "warmup": 2437
+      },
+      "accepted": 148694,
+      "shed": 459265,
+      "errors": 0,
+      "batches": 5434,
+      "rejected": 2276,
+      "last_job_id": 253370,
+      "spike_job_id": 221150
+    },
+    "shop-02.mockshop.test": {
+      "offered": 11572,
+      "offered_by_phase": {
+        "spike": 5965,
+        "tail": 3216,
+        "warmup": 2391
+      },
+      "accepted": 11572,
+      "shed": 0,
+      "errors": 0,
+      "batches": 5017,
+      "rejected": 0,
+      "last_job_id": 253375,
+      "spike_job_id": 221213
+    },
+    "shop-03.mockshop.test": {
+      "offered": 11615,
+      "offered_by_phase": {
+        "spike": 5994,
+        "tail": 3227,
+        "warmup": 2394
+      },
+      "accepted": 11615,
+      "shed": 0,
+      "errors": 0,
+      "batches": 5035,
+      "rejected": 0,
+      "last_job_id": 253363,
+      "spike_job_id": 221208
+    },
+    "shop-04.mockshop.test": {
+      "offered": 11812,
+      "offered_by_phase": {
+        "spike": 6035,
+        "tail": 3334,
+        "warmup": 2443
+      },
+      "accepted": 11812,
+      "shed": 0,
+      "errors": 0,
+      "batches": 5046,
+      "rejected": 0,
+      "last_job_id": 253382,
+      "spike_job_id": 221205
+    },
+    "shop-05.mockshop.test": {
+      "offered": 11607,
+      "offered_by_phase": {
+        "spike": 6047,
+        "tail": 3169,
+        "warmup": 2391
+      },
+      "accepted": 11607,
+      "shed": 0,
+      "errors": 0,
+      "batches": 5031,
+      "rejected": 0,
+      "last_job_id": 253365,
+      "spike_job_id": 221201
+    },
+    "shop-06.mockshop.test": {
+      "offered": 11497,
+      "offered_by_phase": {
+        "spike": 5900,
+        "tail": 3283,
+        "warmup": 2314
+      },
+      "accepted": 11497,
+      "shed": 0,
+      "errors": 0,
+      "batches": 4998,
+      "rejected": 0,
+      "last_job_id": 253379,
+      "spike_job_id": 221203
+    },
+    "shop-07.mockshop.test": {
+      "offered": 11613,
+      "offered_by_phase": {
+        "spike": 6077,
+        "tail": 3158,
+        "warmup": 2378
+      },
+      "accepted": 11613,
+      "shed": 0,
+      "errors": 0,
+      "batches": 5053,
+      "rejected": 0,
+      "last_job_id": 253380,
+      "spike_job_id": 221190
+    },
+    "shop-08.mockshop.test": {
+      "offered": 11719,
+      "offered_by_phase": {
+        "spike": 6098,
+        "tail": 3216,
+        "warmup": 2405
+      },
+      "accepted": 11719,
+      "shed": 0,
+      "errors": 0,
+      "batches": 5041,
+      "rejected": 0,
+      "last_job_id": 253383,
+      "spike_job_id": 221211
+    },
+    "shop-09.mockshop.test": {
+      "offered": 11492,
+      "offered_by_phase": {
+        "spike": 5971,
+        "tail": 3191,
+        "warmup": 2330
+      },
+      "accepted": 11492,
+      "shed": 0,
+      "errors": 0,
+      "batches": 5020,
+      "rejected": 0,
+      "last_job_id": 253377,
+      "spike_job_id": 221182
+    },
+    "shop-10.mockshop.test": {
+      "offered": 11762,
+      "offered_by_phase": {
+        "spike": 6161,
+        "tail": 3226,
+        "warmup": 2375
+      },
+      "accepted": 11762,
+      "shed": 0,
+      "errors": 0,
+      "batches": 5045,
+      "rejected": 0,
+      "last_job_id": 253373,
+      "spike_job_id": 221198
+    }
+  },
+  "enqueue_latency_ms": {
+    "count": 50720,
+    "p50": 1.849,
+    "p99": 10.38981,
+    "max": 69.91
+  }
+}

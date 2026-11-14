@@ -1,0 +1,540 @@
+{
+  "name": "jobqueue-bench",
+  "networks": {
+    "default": {
+      "ipam": {},
+      "name": "jobqueue-bench_default"
+    }
+  },
+  "services": {
+    "api": {
+      "build": {
+        "context": ".",
+        "dockerfile": "Dockerfile"
+      },
+      "cap_drop": [
+        "ALL"
+      ],
+      "command": [
+        "api"
+      ],
+      "depends_on": {
+        "migrate": {
+          "condition": "service_completed_successfully",
+          "required": true
+        }
+      },
+      "entrypoint": null,
+      "environment": {
+        "PGDATABASE": "queue",
+        "PGHOST": "postgres",
+        "PGPASSWORD": "<redacted>",
+        "PGPORT": "5432",
+        "PGSSLMODE": "disable",
+        "PGUSER": "queue",
+        "SHOPIFY_WEBHOOK_SECRET": "<redacted>"
+      },
+      "healthcheck": {
+        "interval": "5s",
+        "retries": 5,
+        "start_interval": "1s",
+        "start_period": "20s",
+        "test": [
+          "CMD",
+          "/queued",
+          "healthcheck"
+        ],
+        "timeout": "3s"
+      },
+      "image": "jobqueue-app:local",
+      "networks": {
+        "default": null
+      },
+      "read_only": true,
+      "security_opt": [
+        "no-new-privileges:true"
+      ],
+      "volumes": [
+        {
+          "bind": {},
+          "read_only": true,
+          "source": "./bench/blackfriday.json",
+          "target": "/etc/queued/shops.json",
+          "type": "bind"
+        }
+      ]
+    },
+    "bench": {
+      "build": {
+        "context": "tools",
+        "dockerfile": "Dockerfile"
+      },
+      "command": null,
+      "entrypoint": null,
+      "environment": {
+        "BENCH_CONFIG": "/src/bench/blackfriday.json",
+        "BENCH_MOCKSHOP_URL": "http://mockshop:8090",
+        "PGDATABASE": "queue",
+        "PGHOST": "postgres",
+        "PGPASSWORD": "<redacted>",
+        "PGPORT": "5432",
+        "PGSSLMODE": "disable",
+        "PGUSER": "queue"
+      },
+      "image": "jobqueue-tools:local",
+      "networks": {
+        "default": null
+      },
+      "profiles": [
+        "bench"
+      ],
+      "volumes": [
+        {
+          "bind": {},
+          "source": ".",
+          "target": "/src",
+          "type": "bind"
+        }
+      ],
+      "working_dir": "/src"
+    },
+    "dispatcher": {
+      "build": {
+        "context": ".",
+        "dockerfile": "Dockerfile"
+      },
+      "cap_drop": [
+        "ALL"
+      ],
+      "command": [
+        "dispatcher"
+      ],
+      "depends_on": {
+        "migrate": {
+          "condition": "service_completed_successfully",
+          "required": true
+        }
+      },
+      "entrypoint": null,
+      "environment": {
+        "PGDATABASE": "queue",
+        "PGHOST": "postgres",
+        "PGPASSWORD": "<redacted>",
+        "PGPORT": "5432",
+        "PGSSLMODE": "disable",
+        "PGUSER": "queue",
+        "QUEUED_SCHEDULER": "fifo"
+      },
+      "healthcheck": {
+        "interval": "5s",
+        "retries": 5,
+        "start_interval": "1s",
+        "start_period": "20s",
+        "test": [
+          "CMD",
+          "/queued",
+          "healthcheck"
+        ],
+        "timeout": "3s"
+      },
+      "image": "jobqueue-app:local",
+      "networks": {
+        "default": null
+      },
+      "read_only": true,
+      "restart": "always",
+      "security_opt": [
+        "no-new-privileges:true"
+      ],
+      "volumes": [
+        {
+          "bind": {},
+          "read_only": true,
+          "source": "./bench/blackfriday.json",
+          "target": "/etc/queued/shops.json",
+          "type": "bind"
+        }
+      ]
+    },
+    "loadgen": {
+      "build": {
+        "context": ".",
+        "dockerfile": "Dockerfile"
+      },
+      "cap_drop": [
+        "ALL"
+      ],
+      "command": null,
+      "entrypoint": [
+        "/loadgen"
+      ],
+      "environment": {
+        "LOADGEN_API_URL": "http://api:8080",
+        "LOADGEN_CONFIG": "/etc/queued/shops.json"
+      },
+      "image": "jobqueue-app:local",
+      "networks": {
+        "default": null
+      },
+      "profiles": [
+        "bench"
+      ],
+      "read_only": true,
+      "security_opt": [
+        "no-new-privileges:true"
+      ],
+      "volumes": [
+        {
+          "bind": {},
+          "read_only": true,
+          "source": "./bench/blackfriday.json",
+          "target": "/etc/queued/shops.json",
+          "type": "bind"
+        }
+      ]
+    },
+    "migrate": {
+      "build": {
+        "context": ".",
+        "dockerfile": "Dockerfile"
+      },
+      "cap_drop": [
+        "ALL"
+      ],
+      "command": [
+        "migrate"
+      ],
+      "depends_on": {
+        "postgres": {
+          "condition": "service_healthy",
+          "required": true
+        }
+      },
+      "entrypoint": null,
+      "environment": {
+        "PGDATABASE": "queue",
+        "PGHOST": "postgres",
+        "PGPASSWORD": "<redacted>",
+        "PGPORT": "5432",
+        "PGSSLMODE": "disable",
+        "PGUSER": "queue"
+      },
+      "image": "jobqueue-app:local",
+      "networks": {
+        "default": null
+      },
+      "read_only": true,
+      "restart": "no",
+      "security_opt": [
+        "no-new-privileges:true"
+      ]
+    },
+    "mockshop": {
+      "build": {
+        "context": ".",
+        "dockerfile": "Dockerfile"
+      },
+      "cap_drop": [
+        "ALL"
+      ],
+      "command": null,
+      "entrypoint": [
+        "/mockshop"
+      ],
+      "environment": {
+        "MOCKSHOP_CONFIG": "/etc/queued/shops.json",
+        "MOCKSHOP_HTTP_ADDR": ":8090",
+        "MOCKSHOP_WEBHOOK_URL": "http://api:8080/webhooks/shopify",
+        "SHOPIFY_WEBHOOK_SECRET": "<redacted>"
+      },
+      "healthcheck": {
+        "interval": "5s",
+        "retries": 5,
+        "start_interval": "1s",
+        "start_period": "20s",
+        "test": [
+          "CMD",
+          "/mockshop",
+          "healthcheck"
+        ],
+        "timeout": "3s"
+      },
+      "image": "jobqueue-app:local",
+      "networks": {
+        "default": null
+      },
+      "read_only": true,
+      "security_opt": [
+        "no-new-privileges:true"
+      ],
+      "volumes": [
+        {
+          "bind": {},
+          "read_only": true,
+          "source": "./bench/blackfriday.json",
+          "target": "/etc/queued/shops.json",
+          "type": "bind"
+        }
+      ]
+    },
+    "postgres": {
+      "command": [
+        "postgres",
+        "-c",
+        "max_connections=300"
+      ],
+      "entrypoint": null,
+      "environment": {
+        "POSTGRES_DB": "queue",
+        "POSTGRES_PASSWORD": "<redacted>",
+        "POSTGRES_USER": "queue"
+      },
+      "healthcheck": {
+        "interval": "5s",
+        "retries": 10,
+        "start_interval": "1s",
+        "start_period": "30s",
+        "test": [
+          "CMD",
+          "pg_isready",
+          "-h",
+          "127.0.0.1",
+          "-U",
+          "queue",
+          "-d",
+          "queue"
+        ],
+        "timeout": "3s"
+      },
+      "image": "postgres:16.15-trixie@sha256:f9a7b9ebf6f56201f949db745e47bc423c0f0f8294bafe991cc10bf74b029657",
+      "networks": {
+        "default": null
+      },
+      "volumes": [
+        {
+          "source": "pgdata",
+          "target": "/var/lib/postgresql/data",
+          "type": "volume",
+          "volume": {}
+        }
+      ]
+    },
+    "prometheus": {
+      "command": null,
+      "entrypoint": null,
+      "healthcheck": {
+        "interval": "5s",
+        "retries": 5,
+        "start_interval": "1s",
+        "start_period": "20s",
+        "test": [
+          "CMD",
+          "wget",
+          "-q",
+          "-O",
+          "/dev/null",
+          "http://127.0.0.1:9090/-/healthy"
+        ],
+        "timeout": "3s"
+      },
+      "image": "prom/prometheus:v3.15.1-busybox@sha256:fa3302279710be2f21a8301ec17a8b4f2301fd829bd113839b3b6b02b6f191a2",
+      "networks": {
+        "default": null
+      },
+      "volumes": [
+        {
+          "bind": {},
+          "read_only": true,
+          "source": "./config/prometheus.yml",
+          "target": "/etc/prometheus/prometheus.yml",
+          "type": "bind"
+        }
+      ]
+    },
+    "toxiproxy": {
+      "command": null,
+      "entrypoint": null,
+      "healthcheck": {
+        "interval": "5s",
+        "retries": 5,
+        "start_interval": "1s",
+        "start_period": "10s",
+        "test": [
+          "CMD",
+          "/toxiproxy-cli",
+          "list"
+        ],
+        "timeout": "3s"
+      },
+      "image": "ghcr.io/shopify/toxiproxy:2.13.0@sha256:5d3dae09bc185dcc5ff6cf43abf6062a4a720aff0c4306a471e773acdcd107aa",
+      "networks": {
+        "default": null
+      }
+    },
+    "worker-1": {
+      "build": {
+        "context": ".",
+        "dockerfile": "Dockerfile"
+      },
+      "cap_drop": [
+        "ALL"
+      ],
+      "command": [
+        "worker"
+      ],
+      "depends_on": {
+        "migrate": {
+          "condition": "service_completed_successfully",
+          "required": true
+        }
+      },
+      "entrypoint": null,
+      "environment": {
+        "PGDATABASE": "queue",
+        "PGHOST": "postgres",
+        "PGPASSWORD": "<redacted>",
+        "PGPORT": "5432",
+        "PGSSLMODE": "disable",
+        "PGUSER": "queue"
+      },
+      "healthcheck": {
+        "interval": "5s",
+        "retries": 5,
+        "start_interval": "1s",
+        "start_period": "20s",
+        "test": [
+          "CMD",
+          "/queued",
+          "healthcheck"
+        ],
+        "timeout": "3s"
+      },
+      "image": "jobqueue-app:local",
+      "networks": {
+        "default": null
+      },
+      "read_only": true,
+      "security_opt": [
+        "no-new-privileges:true"
+      ],
+      "volumes": [
+        {
+          "bind": {},
+          "read_only": true,
+          "source": "./bench/blackfriday.json",
+          "target": "/etc/queued/shops.json",
+          "type": "bind"
+        }
+      ]
+    },
+    "worker-2": {
+      "build": {
+        "context": ".",
+        "dockerfile": "Dockerfile"
+      },
+      "cap_drop": [
+        "ALL"
+      ],
+      "command": [
+        "worker"
+      ],
+      "depends_on": {
+        "migrate": {
+          "condition": "service_completed_successfully",
+          "required": true
+        }
+      },
+      "entrypoint": null,
+      "environment": {
+        "PGDATABASE": "queue",
+        "PGHOST": "postgres",
+        "PGPASSWORD": "<redacted>",
+        "PGPORT": "5432",
+        "PGSSLMODE": "disable",
+        "PGUSER": "queue"
+      },
+      "healthcheck": {
+        "interval": "5s",
+        "retries": 5,
+        "start_interval": "1s",
+        "start_period": "20s",
+        "test": [
+          "CMD",
+          "/queued",
+          "healthcheck"
+        ],
+        "timeout": "3s"
+      },
+      "image": "jobqueue-app:local",
+      "networks": {
+        "default": null
+      },
+      "read_only": true,
+      "security_opt": [
+        "no-new-privileges:true"
+      ],
+      "volumes": [
+        {
+          "bind": {},
+          "read_only": true,
+          "source": "./bench/blackfriday.json",
+          "target": "/etc/queued/shops.json",
+          "type": "bind"
+        }
+      ]
+    }
+  },
+  "volumes": {
+    "pgdata": {
+      "name": "jobqueue-bench_pgdata"
+    }
+  },
+  "x-app": {
+    "build": {
+      "context": ".",
+      "dockerfile": "Dockerfile"
+    },
+    "cap_drop": [
+      "ALL"
+    ],
+    "environment": {
+      "PGDATABASE": "queue",
+      "PGHOST": "postgres",
+      "PGPASSWORD": "<redacted>",
+      "PGPORT": "5432",
+      "PGSSLMODE": "disable",
+      "PGUSER": "queue"
+    },
+    "image": "jobqueue-app:local",
+    "read_only": true,
+    "security_opt": [
+      "no-new-privileges:true"
+    ]
+  },
+  "x-app-healthcheck": {
+    "interval": "5s",
+    "retries": 5,
+    "start_interval": "1s",
+    "start_period": "20s",
+    "test": [
+      "CMD",
+      "/queued",
+      "healthcheck"
+    ],
+    "timeout": "3s"
+  },
+  "x-bench-config": [
+    "./bench/blackfriday.json:/etc/queued/shops.json:ro"
+  ],
+  "x-pg-client-env": {
+    "PGDATABASE": "queue",
+    "PGHOST": "postgres",
+    "PGPASSWORD": "<redacted>",
+    "PGPORT": "5432",
+    "PGSSLMODE": "disable",
+    "PGUSER": "queue"
+  },
+  "x-queued-config": [
+    "./config/shops.json:/etc/queued/shops.json:ro"
+  ]
+}
